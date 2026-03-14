@@ -1,0 +1,902 @@
+[
+  {
+    "id": 86366,
+    "nombre": "RAIN STICK B 009.wav",
+    "categoria": "rain",
+    "duracion": 6.42601,
+    "archivo": "rain_86366.mp3",
+    "ruta": "freesound_audio\\rain_86366.mp3",
+    "tags": "['chile', 'chilean', 'ghana', 'ghanaian', 'instrument', 'percussion', 'peru', 'peruvian', 'rain', 'rainstick', 'rattle', 'shaker', 'stick', 'storm', 'weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 86362,
+    "nombre": "RAIN STICK B 005.wav",
+    "categoria": "rain",
+    "duracion": 5.25177,
+    "archivo": "rain_86362.mp3",
+    "ruta": "freesound_audio\\rain_86362.mp3",
+    "tags": "['chile', 'chilean', 'ghana', 'ghanaian', 'instrument', 'percussion', 'peru', 'peruvian', 'rain', 'rainstick', 'rattle', 'shaker', 'stick', 'storm', 'weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 86365,
+    "nombre": "RAIN STICK B 008.wav",
+    "categoria": "rain",
+    "duracion": 8.20435,
+    "archivo": "rain_86365.mp3",
+    "ruta": "freesound_audio\\rain_86365.mp3",
+    "tags": "['chile', 'chilean', 'ghana', 'ghanaian', 'instrument', 'percussion', 'peru', 'peruvian', 'rain', 'rainstick', 'rattle', 'shaker', 'stick', 'storm', 'weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 86364,
+    "nombre": "RAIN STICK B 007.wav",
+    "categoria": "rain",
+    "duracion": 6.08447,
+    "archivo": "rain_86364.mp3",
+    "ruta": "freesound_audio\\rain_86364.mp3",
+    "tags": "['chile', 'chilean', 'ghana', 'ghanaian', 'instrument', 'percussion', 'peru', 'peruvian', 'rain', 'rainstick', 'rattle', 'shaker', 'stick', 'storm', 'weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 86363,
+    "nombre": "RAIN STICK B 006.wav",
+    "categoria": "rain",
+    "duracion": 7.02483,
+    "archivo": "rain_86363.mp3",
+    "ruta": "freesound_audio\\rain_86363.mp3",
+    "tags": "['chile', 'chilean', 'ghana', 'ghanaian', 'instrument', 'percussion', 'peru', 'peruvian', 'rain', 'rainstick', 'rattle', 'shaker', 'stick', 'storm', 'weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 86361,
+    "nombre": "RAIN STICK B 004.wav",
+    "categoria": "rain",
+    "duracion": 5.6363,
+    "archivo": "rain_86361.mp3",
+    "ruta": "freesound_audio\\rain_86361.mp3",
+    "tags": "['chile', 'chilean', 'ghana', 'ghanaian', 'instrument', 'percussion', 'peru', 'peruvian', 'rain', 'rainstick', 'rattle', 'shaker', 'stick', 'storm', 'weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 86360,
+    "nombre": "RAIN STICK B 003.wav",
+    "categoria": "rain",
+    "duracion": 4.6968,
+    "archivo": "rain_86360.mp3",
+    "ruta": "freesound_audio\\rain_86360.mp3",
+    "tags": "['chile', 'chilean', 'ghana', 'ghanaian', 'instrument', 'percussion', 'peru', 'peruvian', 'rain', 'rainstick', 'rattle', 'shaker', 'stick', 'storm', 'weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 86359,
+    "nombre": "RAIN STICK B 002.wav",
+    "categoria": "rain",
+    "duracion": 5.77184,
+    "archivo": "rain_86359.mp3",
+    "ruta": "freesound_audio\\rain_86359.mp3",
+    "tags": "['chile', 'chilean', 'ghana', 'ghanaian', 'instrument', 'percussion', 'peru', 'peruvian', 'rain', 'rainstick', 'rattle', 'shaker', 'stick', 'storm', 'weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 86358,
+    "nombre": "RAIN STICK B 001.wav",
+    "categoria": "rain",
+    "duracion": 4.04188,
+    "archivo": "rain_86358.mp3",
+    "ruta": "freesound_audio\\rain_86358.mp3",
+    "tags": "['chile', 'chilean', 'ghana', 'ghanaian', 'instrument', 'percussion', 'peru', 'peruvian', 'rain', 'rainstick', 'rattle', 'shaker', 'stick', 'storm', 'weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 86357,
+    "nombre": "RAIN STICK A INCIDENTAL RATTLE 03.wav",
+    "categoria": "rain",
+    "duracion": 1.1495,
+    "archivo": "rain_86357.mp3",
+    "ruta": "freesound_audio\\rain_86357.mp3",
+    "tags": "['chile', 'chilean', 'ghana', 'ghanaian', 'instrument', 'percussion', 'peru', 'peruvian', 'rain', 'rainstick', 'rattle', 'shaker', 'stick', 'storm', 'weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 82080,
+    "nombre": "01296 church bells 3 close.wav",
+    "categoria": "church bells",
+    "duracion": 3.32846,
+    "archivo": "church_bells_82080.mp3",
+    "ruta": "freesound_audio\\church_bells_82080.mp3",
+    "tags": "['bell', 'bells', 'church', 'holy', 'mass', 'mess']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 77069,
+    "nombre": "01182 church bells on wind 8.wav",
+    "categoria": "church bells",
+    "duracion": 6.1632,
+    "archivo": "church_bells_77069.mp3",
+    "ruta": "freesound_audio\\church_bells_77069.mp3",
+    "tags": "['bell', 'bells', 'church', 'outdoor']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 337910,
+    "nombre": "82ChurchBells.wav",
+    "categoria": "church bells",
+    "duracion": 3.73552,
+    "archivo": "church_bells_337910.mp3",
+    "ruta": "freesound_audio\\church_bells_337910.mp3",
+    "tags": "['Bells', 'c', 'Church', 'simple']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 807688,
+    "nombre": "Berlin church bells",
+    "categoria": "church bells",
+    "duracion": 6.93333,
+    "archivo": "church_bells_807688.mp3",
+    "ruta": "freesound_audio\\church_bells_807688.mp3",
+    "tags": "['bells', 'berlin', 'brass', 'church', 'germany', 'morning']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 569356,
+    "nombre": "Church Bell.wav",
+    "categoria": "church bells",
+    "duracion": 7.36673,
+    "archivo": "church_bells_569356.mp3",
+    "ruta": "freesound_audio\\church_bells_569356.mp3",
+    "tags": "['Bells', 'Church', 'Church-Bells']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 96146,
+    "nombre": "ChurchBells.wav",
+    "categoria": "church bells",
+    "duracion": 2.45079,
+    "archivo": "church_bells_96146.mp3",
+    "ruta": "freesound_audio\\church_bells_96146.mp3",
+    "tags": "['bells', 'cathedral', 'church', 'haunted', 'haunting']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 726296,
+    "nombre": "church bells",
+    "categoria": "church bells",
+    "duracion": 9.60794,
+    "archivo": "church_bells_726296.mp3",
+    "ruta": "freesound_audio\\church_bells_726296.mp3",
+    "tags": "['bells', 'church', 'field-recording', 'pealing', 'peals', 'ringing']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 613805,
+    "nombre": "two church bells at river 730 AM 210718_034.wav",
+    "categoria": "church bells",
+    "duracion": 9.442,
+    "archivo": "church_bells_613805.mp3",
+    "ruta": "freesound_audio\\church_bells_613805.mp3",
+    "tags": "['ambiance', 'ambient', 'bell', 'bells', 'birds', 'church', 'church-bell', 'early', 'embankment', 'field', 'field-recording', 'fields', 'floodplain', 'Maas', 'morning', 'river', 'river-side', 'summer', 'village']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 152490,
+    "nombre": "mySound_JPPT6_Church-Bells.wav",
+    "categoria": "church bells",
+    "duracion": 3.79646,
+    "archivo": "church_bells_152490.mp3",
+    "ruta": "freesound_audio\\church_bells_152490.mp3",
+    "tags": "['bells', 'church', 'field-recording', 'Joao-Paulo-II', 'Portugal', 'tolling']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 501412,
+    "nombre": "Church bells (2).wav",
+    "categoria": "church bells",
+    "duracion": 7.97867,
+    "archivo": "church_bells_501412.mp3",
+    "ruta": "freesound_audio\\church_bells_501412.mp3",
+    "tags": "['Bells', 'Church', 'Frankfurt']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 822933,
+    "nombre": "cricket chirping (normal)",
+    "categoria": "crickets",
+    "duracion": 2.40122,
+    "archivo": "crickets_822933.mp3",
+    "ruta": "freesound_audio\\crickets_822933.mp3",
+    "tags": "['ambience', 'animal', 'bug', 'chirping', 'cricket', 'crickets', 'field-recording', 'grasshopper', 'insect', 'insects', 'nature', 'night', 'summer']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 822932,
+    "nombre": "cricket chirping (loop)",
+    "categoria": "crickets",
+    "duracion": 6.16252,
+    "archivo": "crickets_822932.mp3",
+    "ruta": "freesound_audio\\crickets_822932.mp3",
+    "tags": "['ambience', 'animal', 'bug', 'chirping', 'cricket', 'crickets', 'field-recording', 'grasshopper', 'insect', 'insects', 'nature', 'night', 'summer']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 822935,
+    "nombre": "cricket chirping (slow)",
+    "categoria": "crickets",
+    "duracion": 2.83179,
+    "archivo": "crickets_822935.mp3",
+    "ruta": "freesound_audio\\crickets_822935.mp3",
+    "tags": "['ambience', 'animal', 'bug', 'chirping', 'cricket', 'crickets', 'field-recording', 'grasshopper', 'insect', 'insects', 'nature', 'night', 'summer']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 672332,
+    "nombre": "mobile crickets",
+    "categoria": "crickets",
+    "duracion": 8.75,
+    "archivo": "crickets_672332.mp3",
+    "ruta": "freesound_audio\\crickets_672332.mp3",
+    "tags": "['crickets', 'field-recording', 'insects', 'Mediterranean', 'nature', 'summer']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 678315,
+    "nombre": "synthesized cricket 01",
+    "categoria": "crickets",
+    "duracion": 3.7485,
+    "archivo": "crickets_678315.mp3",
+    "ruta": "freesound_audio\\crickets_678315.mp3",
+    "tags": "['animal', 'birds', 'crickets', 'fauna', 'insects', 'nature', 'scifi', 'synth']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 678310,
+    "nombre": "synthesized cricket",
+    "categoria": "crickets",
+    "duracion": 1.45433,
+    "archivo": "crickets_678310.mp3",
+    "ruta": "freesound_audio\\crickets_678310.mp3",
+    "tags": "['animal', 'birds', 'crickets', 'fauna', 'insects', 'nature', 'scifi', 'synth']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 757161,
+    "nombre": "cart346sounds 2-crickets2024-09-16",
+    "categoria": "crickets",
+    "duracion": 9.11333,
+    "archivo": "crickets_757161.mp3",
+    "ruta": "freesound_audio\\crickets_757161.mp3",
+    "tags": "['bugs', 'crickets', 'night']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 621008,
+    "nombre": "Crickets - Grillo.wav",
+    "categoria": "crickets",
+    "duracion": 10.0,
+    "archivo": "crickets_621008.mp3",
+    "ruta": "freesound_audio\\crickets_621008.mp3",
+    "tags": "['Crickets', 'Grillos', 'Nature', 'Night', 'Noche']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 585779,
+    "nombre": "Crickets",
+    "categoria": "crickets",
+    "duracion": 7.0,
+    "archivo": "crickets_585779.mp3",
+    "ruta": "freesound_audio\\crickets_585779.mp3",
+    "tags": "['animals', 'crickets', 'nature', 'night']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 408581,
+    "nombre": "30.Crickets.wav",
+    "categoria": "crickets",
+    "duracion": 8.32171,
+    "archivo": "crickets_408581.mp3",
+    "ruta": "freesound_audio\\crickets_408581.mp3",
+    "tags": "['crickets', 'darkness', 'sound']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 238798,
+    "nombre": "Thunder13.wav",
+    "categoria": "thunder",
+    "duracion": 4.41277,
+    "archivo": "thunder_238798.mp3",
+    "ruta": "freesound_audio\\thunder_238798.mp3",
+    "tags": "['Lightning', 'Loud', 'Storm', 'Thunder', 'Thunderstorm', 'Weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 238795,
+    "nombre": "Thunder16.wav",
+    "categoria": "thunder",
+    "duracion": 3.21127,
+    "archivo": "thunder_238795.mp3",
+    "ruta": "freesound_audio\\thunder_238795.mp3",
+    "tags": "['Lightning', 'Loud', 'Storm', 'Thunder', 'Thunderstorm', 'Weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 238792,
+    "nombre": "Thunder11.wav",
+    "categoria": "thunder",
+    "duracion": 9.39349,
+    "archivo": "thunder_238792.mp3",
+    "ruta": "freesound_audio\\thunder_238792.mp3",
+    "tags": "['Lightning', 'Storm', 'Thunder', 'Thunderstorm', 'Weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 238805,
+    "nombre": "Thunder7.wav",
+    "categoria": "thunder",
+    "duracion": 5.04628,
+    "archivo": "thunder_238805.mp3",
+    "ruta": "freesound_audio\\thunder_238805.mp3",
+    "tags": "['Lightning', 'Loud', 'Storm', 'Thunder', 'Thunderstorm', 'Weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 151196,
+    "nombre": "balfron thunder E.wav",
+    "categoria": "thunder",
+    "duracion": 9.98646,
+    "archivo": "thunder_151196.mp3",
+    "ruta": "freesound_audio\\thunder_151196.mp3",
+    "tags": "['England', 'Field-recording', 'London', 'Thunder']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 238801,
+    "nombre": "Thunder4.wav",
+    "categoria": "thunder",
+    "duracion": 4.77274,
+    "archivo": "thunder_238801.mp3",
+    "ruta": "freesound_audio\\thunder_238801.mp3",
+    "tags": "['Lightning', 'Loud', 'Storm', 'Thunder', 'Thunderstorm', 'Weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 238799,
+    "nombre": "Thunder2.wav",
+    "categoria": "thunder",
+    "duracion": 7.21546,
+    "archivo": "thunder_238799.mp3",
+    "ruta": "freesound_audio\\thunder_238799.mp3",
+    "tags": "['Lightning', 'Loud', 'Storm', 'Thunder', 'Thunderstorm', 'Weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 238804,
+    "nombre": "Thunder5.wav",
+    "categoria": "thunder",
+    "duracion": 5.29887,
+    "archivo": "thunder_238804.mp3",
+    "ruta": "freesound_audio\\thunder_238804.mp3",
+    "tags": "['Lightning', 'Loud', 'Storm', 'Thunder', 'Thunderstorm', 'Weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 238803,
+    "nombre": "Thunder9.wav",
+    "categoria": "thunder",
+    "duracion": 7.40558,
+    "archivo": "thunder_238803.mp3",
+    "ruta": "freesound_audio\\thunder_238803.mp3",
+    "tags": "['Lightning', 'Loud', 'Storm', 'Thunder', 'Thunderstorm', 'Weather']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 151200,
+    "nombre": "balfron thunder K.wav",
+    "categoria": "thunder",
+    "duracion": 6.47292,
+    "archivo": "thunder_151200.mp3",
+    "ruta": "freesound_audio\\thunder_151200.mp3",
+    "tags": "['England', 'Field-recording', 'London', 'Thunder']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 503763,
+    "nombre": "DropsMetalRecipient.wav",
+    "categoria": "water drops",
+    "duracion": 1.20931,
+    "archivo": "water_drops_503763.mp3",
+    "ruta": "freesound_audio\\water_drops_503763.mp3",
+    "tags": "['Drops', 'foley', 'metal', 'pouring', 'recipient', 'water']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 420220,
+    "nombre": "37 - 11 Water drops - Short.WAV",
+    "categoria": "water drops",
+    "duracion": 2.79067,
+    "archivo": "water_drops_420220.mp3",
+    "ruta": "freesound_audio\\water_drops_420220.mp3",
+    "tags": "['CZ', 'Czech', 'drops', 'Pansk', 'Panska', 'short', 'water']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 257349,
+    "nombre": "small water drops",
+    "categoria": "water drops",
+    "duracion": 8.55336,
+    "archivo": "water_drops_257349.mp3",
+    "ruta": "freesound_audio\\water_drops_257349.mp3",
+    "tags": "['drip', 'dripping', 'drop', 'drops', 'water']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 503764,
+    "nombre": "DropsMetalRecipient-Denoised.wav",
+    "categoria": "water drops",
+    "duracion": 1.20931,
+    "archivo": "water_drops_503764.mp3",
+    "ruta": "freesound_audio\\water_drops_503764.mp3",
+    "tags": "['Drops', 'foley', 'metal', 'pouring', 'recipient', 'water']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 458529,
+    "nombre": "Water Drop Effect - Original.mp3",
+    "categoria": "water drops",
+    "duracion": 6.41413,
+    "archivo": "water_drops_458529.mp3",
+    "ruta": "freesound_audio\\water_drops_458529.mp3",
+    "tags": "['drops', 'effect', 'sound', 'water']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 529965,
+    "nombre": "Water drops.wav",
+    "categoria": "water drops",
+    "duracion": 5.27,
+    "archivo": "water_drops_529965.mp3",
+    "ruta": "freesound_audio\\water_drops_529965.mp3",
+    "tags": "['drop', 'drops', 'faucet', 'water']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 259499,
+    "nombre": "TWO_tones_Water_Drops_clean.wav",
+    "categoria": "water drops",
+    "duracion": 4.89398,
+    "archivo": "water_drops_259499.mp3",
+    "ruta": "freesound_audio\\water_drops_259499.mp3",
+    "tags": "['drip', 'dripping', 'drops', 'water']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 149722,
+    "nombre": "Gouttes 1.wav",
+    "categoria": "water drops",
+    "duracion": 1.23762,
+    "archivo": "water_drops_149722.mp3",
+    "ruta": "freesound_audio\\water_drops_149722.mp3",
+    "tags": "['drops', 'misc', 'water']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 16744,
+    "nombre": "running water drops-03.aif",
+    "categoria": "water drops",
+    "duracion": 3.44347,
+    "archivo": "water_drops_16744.mp3",
+    "ruta": "freesound_audio\\water_drops_16744.mp3",
+    "tags": "['drops', 'hand-made', 'running', 'water']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 16743,
+    "nombre": "running water drops-02.aif",
+    "categoria": "water drops",
+    "duracion": 2.8649,
+    "archivo": "water_drops_16743.mp3",
+    "ruta": "freesound_audio\\water_drops_16743.mp3",
+    "tags": "['drops', 'hand-made', 'running', 'water']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 485798,
+    "nombre": "REYNAS_Fanny_2019_2020_Waves.wav",
+    "categoria": "sea waves",
+    "duracion": 10.0,
+    "archivo": "sea_waves_485798.mp3",
+    "ruta": "freesound_audio\\sea_waves_485798.mp3",
+    "tags": "['sea', 'waves', 'wind']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 386526,
+    "nombre": "sea_edit.wav",
+    "categoria": "sea waves",
+    "duracion": 8.33601,
+    "archivo": "sea_waves_386526.mp3",
+    "ruta": "freesound_audio\\sea_waves_386526.mp3",
+    "tags": "['environment', 'game', 'nature', 'ocean', 'sea', 'tide', 'waves']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 394962,
+    "nombre": "wave close coast small 003.wav",
+    "categoria": "sea waves",
+    "duracion": 3.84179,
+    "archivo": "sea_waves_394962.mp3",
+    "ruta": "freesound_audio\\sea_waves_394962.mp3",
+    "tags": "['1', 'beach', 'breaking', 'breaking-waves', 'close', 'coast', 'coastal', 'crashing', 'field-recording', 'gentle', 'lapping', 'ocean', 'sand', 'sea', 'seashore', 'seaside', 'shore', 'single', 'small', 'splash', 'splashing', 'stereo', 'surf', 'water', 'wave', 'waves']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 397398,
+    "nombre": "waves close coast small 008.wav",
+    "categoria": "sea waves",
+    "duracion": 8.10619,
+    "archivo": "sea_waves_397398.mp3",
+    "ruta": "freesound_audio\\sea_waves_397398.mp3",
+    "tags": "['beach', 'breaking', 'breaking-waves', 'close', 'coast', 'coastal', 'crashing', 'field-recording', 'gentle', 'lapping', 'ocean', 'relaxing', 'sand', 'sandy', 'sea', 'sea-shore', 'seashore', 'seaside', 'shore', 'single', 'small', 'splash', 'splashes', 'splashing', 'stereo', 'surf', 'tide', 'water', 'wave', 'waves']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 397235,
+    "nombre": "waves close coast small 006.wav",
+    "categoria": "sea waves",
+    "duracion": 8.16383,
+    "archivo": "sea_waves_397235.mp3",
+    "ruta": "freesound_audio\\sea_waves_397235.mp3",
+    "tags": "['beach', 'breaking', 'breaking-waves', 'close', 'coast', 'coastal', 'crashing', 'field-recording', 'gentle', 'lapping', 'ocean', 'relaxing', 'sand', 'sandy', 'sea', 'sea-shore', 'seashore', 'seaside', 'shore', 'single', 'small', 'splash', 'splashes', 'splashing', 'stereo', 'surf', 'tide', 'water', 'wave', 'waves']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 396321,
+    "nombre": "waves close coast small 007.wav",
+    "categoria": "sea waves",
+    "duracion": 6.81919,
+    "archivo": "sea_waves_396321.mp3",
+    "ruta": "freesound_audio\\sea_waves_396321.mp3",
+    "tags": "['beach', 'breaking', 'breaking-waves', 'close', 'coast', 'coastal', 'crashing', 'field-recording', 'gentle', 'lapping', 'ocean', 'relaxing', 'sand', 'sea', 'sea-shore', 'seashore', 'seaside', 'shore', 'single', 'small', 'splash', 'splashes', 'splashing', 'stereo', 'surf', 'tide', 'water', 'wave', 'waves']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 411917,
+    "nombre": "wave close coast small 009.wav",
+    "categoria": "sea waves",
+    "duracion": 6.30054,
+    "archivo": "sea_waves_411917.mp3",
+    "ruta": "freesound_audio\\sea_waves_411917.mp3",
+    "tags": "['1', 'beach', 'breaking', 'breaking-waves', 'close', 'coast', 'coastal', 'crashing', 'field-recording', 'gentle', 'lapping', 'ocean', 'sand', 'sea', 'sea-shore', 'seashore', 'seaside', 'shore', 'single', 'small', 'splash', 'splashing', 'stereo', 'surf', 'tide', 'water', 'wave', 'waves']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 536912,
+    "nombre": "wave close coast small 010.wav",
+    "categoria": "sea waves",
+    "duracion": 6.18529,
+    "archivo": "sea_waves_536912.mp3",
+    "ruta": "freesound_audio\\sea_waves_536912.mp3",
+    "tags": "['1', 'beach', 'breaking', 'breaking-waves', 'close', 'coast', 'coastal', 'crashing', 'field-recording', 'gentle', 'lapping', 'ocean', 'sand', 'sea', 'sea-shore', 'seashore', 'seaside', 'shore', 'single', 'small', 'splash', 'splashing', 'stereo', 'surf', 'tide', 'water', 'wave', 'waves']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 627355,
+    "nombre": "wave sand beach 007.wav",
+    "categoria": "sea waves",
+    "duracion": 3.70833,
+    "archivo": "sea_waves_627355.mp3",
+    "ruta": "freesound_audio\\sea_waves_627355.mp3",
+    "tags": "['1', 'beach', 'breaking', 'breaking-waves', 'close', 'coast', 'coastal', 'crashing', 'field-recording', 'gentle', 'lapping', 'ocean', 'one', 'sand', 'sea', 'seashore', 'seaside', 'shore', 'single', 'small', 'splash', 'splashing', 'stereo', 'surf', 'water', 'wave', 'waves']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 627352,
+    "nombre": "wave sand beach 010.wav",
+    "categoria": "sea waves",
+    "duracion": 6.5,
+    "archivo": "sea_waves_627352.mp3",
+    "ruta": "freesound_audio\\sea_waves_627352.mp3",
+    "tags": "['1', 'beach', 'breaking', 'breaking-waves', 'close', 'coast', 'coastal', 'crashing', 'field-recording', 'gentle', 'lapping', 'ocean', 'one', 'sand', 'sea', 'seashore', 'seaside', 'shore', 'single', 'small', 'splash', 'splashing', 'stereo', 'surf', 'water', 'wave', 'waves']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 138987,
+    "nombre": "Arp 2 - In the Wind.wav",
+    "categoria": "wind",
+    "duracion": 6.62501,
+    "archivo": "wind_138987.mp3",
+    "ruta": "freesound_audio\\wind_138987.mp3",
+    "tags": "['2', 'Arp', 'In', 'The', 'wind']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 138986,
+    "nombre": "Bass - In the wind.wav",
+    "categoria": "wind",
+    "duracion": 6.62501,
+    "archivo": "wind_138986.mp3",
+    "ruta": "freesound_audio\\wind_138986.mp3",
+    "tags": "['Bass', 'In', 'Wind']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 138985,
+    "nombre": "Bass 2 - In the Wind.wav",
+    "categoria": "wind",
+    "duracion": 6.62501,
+    "archivo": "wind_138985.mp3",
+    "ruta": "freesound_audio\\wind_138985.mp3",
+    "tags": "['2', 'Bass', 'In', 'Wind']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 122313,
+    "nombre": "BK-Wind_C1.WAV",
+    "categoria": "wind",
+    "duracion": 2.36714,
+    "archivo": "wind_122313.mp3",
+    "ruta": "freesound_audio\\wind_122313.mp3",
+    "tags": "['analog', 'multi-sample', 'pad', 'synth', 'virtual-analog', 'wind']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 122325,
+    "nombre": "BK-Wind_G#3.WAV",
+    "categoria": "wind",
+    "duracion": 1.68721,
+    "archivo": "wind_122325.mp3",
+    "ruta": "freesound_audio\\wind_122325.mp3",
+    "tags": "['analog', 'multi-sample', 'pad', 'synth', 'virtual-analog', 'wind']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 122326,
+    "nombre": "BK-Wind_G#4.WAV",
+    "categoria": "wind",
+    "duracion": 2.2651,
+    "archivo": "wind_122326.mp3",
+    "ruta": "freesound_audio\\wind_122326.mp3",
+    "tags": "['analog', 'multi-sample', 'pad', 'synth', 'virtual-analog', 'wind']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 122323,
+    "nombre": "BK-Wind_G#1.WAV",
+    "categoria": "wind",
+    "duracion": 2.26043,
+    "archivo": "wind_122323.mp3",
+    "ruta": "freesound_audio\\wind_122323.mp3",
+    "tags": "['analog', 'multi-sample', 'pad', 'synth', 'virtual-analog', 'wind']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 122322,
+    "nombre": "BK-Wind_E5.WAV",
+    "categoria": "wind",
+    "duracion": 2.11227,
+    "archivo": "wind_122322.mp3",
+    "ruta": "freesound_audio\\wind_122322.mp3",
+    "tags": "['analog', 'multi-sample', 'pad', 'synth', 'virtual-analog', 'wind']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 122324,
+    "nombre": "BK-Wind_G#2.WAV",
+    "categoria": "wind",
+    "duracion": 2.58576,
+    "archivo": "wind_122324.mp3",
+    "ruta": "freesound_audio\\wind_122324.mp3",
+    "tags": "['analog', 'multi-sample', 'pad', 'synth', 'virtual-analog', 'wind']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 122321,
+    "nombre": "BK-Wind_E4.WAV",
+    "categoria": "wind",
+    "duracion": 1.87463,
+    "archivo": "wind_122321.mp3",
+    "ruta": "freesound_audio\\wind_122321.mp3",
+    "tags": "['analog', 'multi-sample', 'pad', 'synth', 'virtual-analog', 'wind']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 271370,
+    "nombre": "singing bowl strike sound",
+    "categoria": "singing bowl",
+    "duracion": 6.26939,
+    "archivo": "singing_bowl_271370.mp3",
+    "ruta": "freesound_audio\\singing_bowl_271370.mp3",
+    "tags": "['asian', 'bowl', 'buddhist', 'chant', 'chanting', 'mongolian', 'monk', 'overtone', 'religious', 'singing', 'strike', 'tantra', 'tantric', 'tibetan', 'undertone', 'yoga']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 841989,
+    "nombre": "Sing bowl ring",
+    "categoria": "singing bowl",
+    "duracion": 1.42603,
+    "archivo": "singing_bowl_841989.mp3",
+    "ruta": "freesound_audio\\singing_bowl_841989.mp3",
+    "tags": "['bowl', 'Instrument', 'Ring', 'singing']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 476871,
+    "nombre": "Bowl Bell #1 (One Hit - Fade).wav",
+    "categoria": "singing bowl",
+    "duracion": 9.5688,
+    "archivo": "singing_bowl_476871.mp3",
+    "ruta": "freesound_audio\\singing_bowl_476871.mp3",
+    "tags": "['Bell', 'Bowl', 'Singing']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 400809,
+    "nombre": "Stereo Harmony Bells",
+    "categoria": "singing bowl",
+    "duracion": 8.38465,
+    "archivo": "singing_bowl_400809.mp3",
+    "ruta": "freesound_audio\\singing_bowl_400809.mp3",
+    "tags": "['bell', 'bells', 'bowl', 'cinematic', 'design', 'edit', 'edited', 'glimmer', 'glimmering', 'harmonic', 'harmonics', 'harmony', 'meditation', 'monk', 'monks', 'shining', 'shiny', 'singing', 'singing-bowl', 'sound', 'sound-design', 'sounddesign', 'stereo-recording', 'tibet', 'tibetan', 'twinkle', 'twinkling']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 478658,
+    "nombre": "ping.ogg",
+    "categoria": "singing bowl",
+    "duracion": 2.0,
+    "archivo": "singing_bowl_478658.mp3",
+    "ruta": "freesound_audio\\singing_bowl_478658.mp3",
+    "tags": "['bowl', 'ding', 'ping', 'sing', 'singing']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 181010,
+    "nombre": "ring sound.aif",
+    "categoria": "singing bowl",
+    "duracion": 7.04,
+    "archivo": "singing_bowl_181010.mp3",
+    "ruta": "freesound_audio\\singing_bowl_181010.mp3",
+    "tags": "['bell', 'bowl', 'chime', 'gong', 'healing', 'peacful', 'ring', 'singing', 'singing-bowl', 'single-chime', 'small-gong', 'soft', 'soft-ring', 'Yoga']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 280206,
+    "nombre": "Singing bowl",
+    "categoria": "singing bowl",
+    "duracion": 6.01161,
+    "archivo": "singing_bowl_280206.mp3",
+    "ruta": "freesound_audio\\singing_bowl_280206.mp3",
+    "tags": "['bowl', 'brass', 'cinematic', 'continuous', 'dry', 'harmonic', 'instrument', 'nepalese', 'organic', 'singing-bowl', 'tibetan', 'tibetan-bowl']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 219624,
+    "nombre": "bow-bowl.wav",
+    "categoria": "singing bowl",
+    "duracion": 10.0,
+    "archivo": "singing_bowl_219624.mp3",
+    "ruta": "freesound_audio\\singing_bowl_219624.mp3",
+    "tags": "['bowl', 'nepal', 'percussion', 'sample']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 810426,
+    "nombre": "temple bowl",
+    "categoria": "singing bowl",
+    "duracion": 5.74852,
+    "archivo": "singing_bowl_810426.mp3",
+    "ruta": "freesound_audio\\singing_bowl_810426.mp3",
+    "tags": "['Ambient', 'Bowl', 'Drone', 'Temple', 'Tibetan']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 700014,
+    "nombre": "Xoay T\u00f4 Nh\u1ef1a 1",
+    "categoria": "singing bowl",
+    "duracion": 2.6819,
+    "archivo": "singing_bowl_700014.mp3",
+    "ruta": "freesound_audio\\singing_bowl_700014.mp3",
+    "tags": "['bowl', 'fast', 'plastic', 'rotate', 'spin']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 361922,
+    "nombre": "tuning_fork_A4_440Hz.wav",
+    "categoria": "tuning fork",
+    "duracion": 3.07664,
+    "archivo": "tuning_fork_361922.mp3",
+    "ruta": "freesound_audio\\tuning_fork_361922.mp3",
+    "tags": "['440Hz', 'A4', 'fork', 'tuning', 'waveform']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 567864,
+    "nombre": "VALLEE_Louisa_2020_2021_diapason.wav",
+    "categoria": "tuning fork",
+    "duracion": 9.00934,
+    "archivo": "tuning_fork_567864.mp3",
+    "ruta": "freesound_audio\\tuning_fork_567864.mp3",
+    "tags": "['bell', 'flask', 'fork', 'ring', 'ringing', 'tuning']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 740186,
+    "nombre": "Tuning fork 432Hz smack 2",
+    "categoria": "tuning fork",
+    "duracion": 4.78933,
+    "archivo": "tuning_fork_740186.mp3",
+    "ruta": "freesound_audio\\tuning_fork_740186.mp3",
+    "tags": "['432Hz', 'biofield-tuning-fork', 'impact', 'metal', 'metallic', 'smack', 'sound-healing-tuning-fork', 'tuning-fork']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 740185,
+    "nombre": "Tuning fork 432Hz smack 1",
+    "categoria": "tuning fork",
+    "duracion": 4.18133,
+    "archivo": "tuning_fork_740185.mp3",
+    "ruta": "freesound_audio\\tuning_fork_740185.mp3",
+    "tags": "['432Hz', 'biofield-tuning-fork', 'impact', 'metal', 'metallic', 'metal-vibration', 'smack', 'smacking', 'smacking-object', 'sound-healing-tuning-fork', 'tuning-fork', 'vibrating', 'vibration']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 740418,
+    "nombre": "Tuning fork 432Hz smack 4",
+    "categoria": "tuning fork",
+    "duracion": 5.42133,
+    "archivo": "tuning_fork_740418.mp3",
+    "ruta": "freesound_audio\\tuning_fork_740418.mp3",
+    "tags": "['432Hz', 'biofield-tuning-fork', 'healing-frequencies', 'metal-vibration', 'sound-healing', 'tuning-fork', 'tuning-fork-432Hz', 'vibration']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 809061,
+    "nombre": "MUSCInst-CU_Tuning Fork, Muted_Nicholas Judy_TDC",
+    "categoria": "tuning fork",
+    "duracion": 1.31193,
+    "archivo": "tuning_fork_809061.mp3",
+    "ruta": "freesound_audio\\tuning_fork_809061.mp3",
+    "tags": "['ding', 'hit', 'muted', 'tuning-fork']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 809062,
+    "nombre": "MUSCInst-CU_Tuning Fork_Nicholas Judy_TDC",
+    "categoria": "tuning fork",
+    "duracion": 5.17796,
+    "archivo": "tuning_fork_809062.mp3",
+    "ruta": "freesound_audio\\tuning_fork_809062.mp3",
+    "tags": "['ding', 'hit', 'tuning-fork']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 18872,
+    "nombre": "sound-bell2-40Hz.wav",
+    "categoria": "tuning fork",
+    "duracion": 5.65406,
+    "archivo": "tuning_fork_18872.mp3",
+    "ruta": "freesound_audio\\tuning_fork_18872.mp3",
+    "tags": "['bell', 'click', 'noise', 'pluck', 'ring', 'tone', 'woman']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 617395,
+    "nombre": "UnTunedFork.wav",
+    "categoria": "tuning fork",
+    "duracion": 1.58535,
+    "archivo": "tuning_fork_617395.mp3",
+    "ruta": "freesound_audio\\tuning_fork_617395.mp3",
+    "tags": "['camdenMIDIDAWI', 'jfeliz', 'new-stuff']",
+    "fuente": "freesound_api"
+  },
+  {
+    "id": 706050,
+    "nombre": "Tuning Fork (1).wav jane physics",
+    "categoria": "tuning fork",
+    "duracion": 8.47501,
+    "archivo": "tuning_fork_706050.mp3",
+    "ruta": "freesound_audio\\tuning_fork_706050.mp3",
+    "tags": "['field-recording', 'jane', 'physics']",
+    "fuente": "freesound_api"
+  }
+]
