@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-Landing Zone — warm-path.
-
-MinIO: stores audio, image, video, and metadata in the same bucket (landing-zone).
-Kafka: after upload, produces an event message.
-
-Run: records 5s audio, generates video/image, uploads to MinIO, then produces to Kafka.
+Consumes metadata messages from Kafka (audio_path, bucket, timestamp, sample_rate),
+downloads audio from MinIO using the path from kafka messages, processes cymatics, 
+moves audio from raw folder to hot-path/<peak_freq>/<uuid>.wav, and removes it from raw fokder,
+uploads image/video to MinIO, writes CSV with correct audio path. Kafka carries only references.
 
 run the docker compose file to have the needed containers (MinIO, Kafka/zookeeper) running 
 and the needed environment variables set.
@@ -18,6 +16,7 @@ import json
 import tempfile
 import uuid
 from collections import Counter
+from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,51 +24,38 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import numpy as np
-import sounddevice as sd
 import cv2
-import time
 from scipy.signal import find_peaks
 from scipy.io import wavfile
 
-# MinIO
-try:
-    from minio import Minio
-    HAS_MINIO = True
-except ImportError:
-    HAS_MINIO = False
+from minio import Minio
+from minio.commonconfig import CopySource
 
-# Kafka
 try:
-    from kafka import KafkaProducer
-    from kafka.admin import KafkaAdminClient, NewTopic
-    from kafka.errors import TopicAlreadyExistsError
+    from kafka import KafkaConsumer
+    from kafka.structs import TopicPartition, OffsetAndMetadata
     HAS_KAFKA = True
 except ImportError:
     HAS_KAFKA = False
-    KafkaAdminClient = None
-    NewTopic = None
-    TopicAlreadyExistsError = Exception  # no-op if kafka not installed
+    TopicPartition = None
+    OffsetAndMetadata = None
 
 # =============================================================================
-#  MinIO config from env
+#  Config
 # =============================================================================
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "")
 MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
 MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "landing-zone")
-
-# =============================================================================
-#  Kafka config from env (transfer to landing-zone in same MinIO)
-# =============================================================================
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092").strip()
-KAFKA_TOPIC_WARM = os.environ.get("KAFKA_TOPIC_WARM", "landing-zone-events-warm-path")
+KAFKA_TOPIC_HOT = os.environ.get("KAFKA_TOPIC_HOT", "landing-zone-events-hot-path")
 
-SOURCE = "warm-path"
+SOURCE = "hot-path"
 METADATA_KEY = "metadata/observations.csv"
 
 # =============================================================================
-#  Cymatics settings (2 zones — same as visualizer)
+#  Cymatics settings
 # =============================================================================
 DURATION = 5
 SAMPLE_RATE = 44100
@@ -87,40 +73,28 @@ N_ZONES = 2
 
 
 def build_zones(gs):
-    """Two concentric zones — seamless, no visible barriers."""
     yy, xx = np.mgrid[0:gs, 0:gs]
     c = gs / 2.0
     rr = np.sqrt((xx - c) ** 2 + (yy - c) ** 2)
     theta = np.arctan2(yy - c, xx - c)
     R = gs / 2.0 - 3
     r1 = R * ZONE_FRAC[0]
-    masks = [
-        rr < r1,
-        (rr >= r1) & (rr < R),
-    ]
+    masks = [rr < r1, (rr >= r1) & (rr < R)]
     plate = rr < R
     inner_r = [0.0, r1]
     outer_r = [r1, R]
     boundaries = [r1]
-    return dict(rr=rr, theta=theta, R=R, c=c, r1=r1,
-                masks=masks, plate=plate,
-                inner_r=inner_r, outer_r=outer_r,
-                boundaries=boundaries)
+    return dict(rr=rr, theta=theta, R=R, c=c, r1=r1, masks=masks, plate=plate,
+                inner_r=inner_r, outer_r=outer_r, boundaries=boundaries)
 
 
 def build_zone_sources(gs, zinfo):
-    """Place wave sources around the perimeter of each zone.
-    Inner disk — sources on its outer edge.
-    Ring zone — sources on both inner and outer edges.
-    """
     yy, xx = np.mgrid[0:gs, 0:gs]
-    px = xx.astype(np.float64)
-    py = yy.astype(np.float64)
+    px, py = xx.astype(np.float64), yy.astype(np.float64)
     c = zinfo["c"]
     all_src = []
     for zi in range(N_ZONES):
-        r_in = zinfo["inner_r"][zi]
-        r_out = zinfo["outer_r"][zi]
+        r_in, r_out = zinfo["inner_r"][zi], zinfo["outer_r"][zi]
         ns = N_SOURCES[zi]
         pts = []
         if zi == 0:
@@ -128,8 +102,7 @@ def build_zone_sources(gs, zinfo):
                 a = 2.0 * np.pi * si / ns
                 pts.append((c + (r_out + 1) * np.cos(a), c + (r_out + 1) * np.sin(a)))
         else:
-            ns_in = ns // 2
-            ns_out = ns - ns_in
+            ns_in, ns_out = ns // 2, ns - ns // 2
             for si in range(ns_in):
                 a = 2.0 * np.pi * si / ns_in
                 pts.append((c + (r_in - 1) * np.cos(a), c + (r_in - 1) * np.sin(a)))
@@ -138,8 +111,7 @@ def build_zone_sources(gs, zinfo):
                 pts.append((c + (r_out + 1) * np.cos(a), c + (r_out + 1) * np.sin(a)))
         src_data = []
         for sx, sy in pts:
-            dx = px - sx
-            dy = py - sy
+            dx, dy = px - sx, py - sy
             d = np.sqrt(dx**2 + dy**2) + 1e-12
             src_data.append((d, dx / d, dy / d))
         all_src.append(src_data)
@@ -149,7 +121,7 @@ def build_zone_sources(gs, zinfo):
 def harmonic_dominant_freq(window_candidates, max_harmonics=5, use_energy_weight=True):
     """
     Pick the true fundamental by counting divisors of window-dominant frequencies.
-    E.g. 60 Hz and 120 Hz windows both boost the 60 Hz candidate.
+    E.g. 60 Hz and 120 Hz windows both boost the 60 Hz candidate, so 60 wins over 120.
     """
     candidate_counts = Counter()
     for c in window_candidates:
@@ -167,7 +139,7 @@ def harmonic_dominant_freq(window_candidates, max_harmonics=5, use_energy_weight
 
 
 def dominant_freq_hz_for_chunk(chunk, sample_rate=SAMPLE_RATE):
-    """Dominant frequency in Hz for a single chunk (FFT + find_peaks, top peak)."""
+    """Return the dominant frequency in Hz for a single chunk (FFT + find_peaks, top peak)."""
     if len(chunk) < 64:
         return 0.0
     fft = np.abs(np.fft.rfft(chunk))
@@ -180,6 +152,8 @@ def dominant_freq_hz_for_chunk(chunk, sample_rate=SAMPLE_RATE):
 
 
 def analyse_frame(chunk, zone_idx):
+    if len(chunk) < 64:
+        return 0.0, [(2.5 + ZONE_SPATIAL_SCALE[zone_idx] * 0.5, 1.0)], 0.0
     fft = np.abs(np.fft.rfft(chunk))
     rms = float(np.sqrt(np.mean(chunk**2)))
     fft_norm = fft / (np.max(fft) + 1e-12)
@@ -188,8 +162,7 @@ def analyse_frame(chunk, zone_idx):
         pidx = np.array([np.argmax(fft_norm)])
     pamps = fft_norm[pidx]
     order = np.argsort(pamps)[::-1][:6]
-    pidx = pidx[order]
-    pamps = pamps[order]
+    pidx, pamps = pidx[order], pamps[order]
     fl = len(fft_norm)
     scale = ZONE_SPATIAL_SCALE[zone_idx]
     sfreqs = [(2.5 + np.sqrt(fidx / fl) * scale, float(amp)) for fidx, amp in zip(pidx, pamps)]
@@ -231,7 +204,7 @@ def displacement_to_brightness(disp_x, disp_y, zmask, gs, rms, t):
         (disp_signed * zc_r < 0).astype(np.float64) + (disp_signed * zc_d < 0).astype(np.float64),
         0.0, 1.0,
     )
-    zc[:, 0] = 0; zc[:, -1] = 0; zc[0, :] = 0; zc[-1, :] = 0
+    zc[:, 0] = zc[:, -1] = zc[0, :] = zc[-1, :] = 0
     zc = cv2.GaussianBlur(zc, (3, 3), 0.6)
     brightness = nodal * 0.6 + edges * 0.25 + zc * 0.3
     cell_tex = np.abs(np.sin(disp_norm * np.pi * 4 + t * 3.0)) ** 3 * (0.03 + rms * 0.12)
@@ -283,28 +256,45 @@ def render_composite(zone_br, zinfo, t, gs):
         env_g += np.clip(weight, 0.0, 1.0) * lg
         env_b += np.clip(weight, 0.0, 1.0) * lb
     env_total = env_r + env_g + env_b + 1e-12
-    env_r /= env_total; env_g /= env_total; env_b /= env_total
+    env_r /= env_total
+    env_g /= env_total
+    env_b /= env_total
     reflect = (b_hi * 0.7 + b_spec * 1.0) * plate_f
-    r_ch += reflect * env_r * 180.0; g_ch += reflect * env_g * 180.0; b_ch += reflect * env_b * 180.0
-    r_ch += b_spec * (140.0 + env_r * 60.0); g_ch += b_spec * (155.0 + env_g * 50.0); b_ch += b_spec * (140.0 + env_b * 40.0)
+    r_ch += reflect * env_r * 180.0
+    g_ch += reflect * env_g * 180.0
+    b_ch += reflect * env_b * 180.0
+    r_ch += b_spec * (140.0 + env_r * 60.0)
+    g_ch += b_spec * (155.0 + env_g * 50.0)
+    b_ch += b_spec * (140.0 + env_b * 40.0)
     flicker = np.sin(br * 20.0 + t * 4.5) * 0.5 + 0.5
     caustic_f = b_hi * flicker * plate_f
-    r_ch += caustic_f * env_r * 50.0; g_ch += caustic_f * env_g * 50.0; b_ch += caustic_f * env_b * 50.0
+    r_ch += caustic_f * env_r * 50.0
+    g_ch += caustic_f * env_g * 50.0
+    b_ch += caustic_f * env_b * 50.0
     fresnel = np.clip((norm_r - 0.7) * 3.3, 0.0, 1.0) * br * plate_f
-    r_ch += fresnel * 22.0; g_ch += fresnel * 45.0; b_ch += fresnel * 55.0
+    r_ch += fresnel * 22.0
+    g_ch += fresnel * 45.0
+    b_ch += fresnel * 55.0
     sss = np.clip(br * 2.0 - br**2 * 3.0, 0.0, 0.3) * plate_f
-    r_ch += sss * 5.0; g_ch += sss * 38.0; b_ch += sss * 30.0
+    r_ch += sss * 5.0
+    g_ch += sss * 38.0
+    b_ch += sss * 30.0
     shadow_dark = 1.0 - shadow * 0.55
-    r_ch *= shadow_dark; g_ch *= shadow_dark; b_ch *= shadow_dark
-    r_ch += rim_g * 12.0; g_ch += rim_g * 35.0; b_ch += rim_g * 45.0
-    r_ch = np.clip(r_ch, 0, 255); g_ch = np.clip(g_ch, 0, 255); b_ch = np.clip(b_ch, 0, 255)
+    r_ch *= shadow_dark
+    g_ch *= shadow_dark
+    b_ch *= shadow_dark
+    r_ch += rim_g * 12.0
+    g_ch += rim_g * 35.0
+    b_ch += rim_g * 45.0
+    r_ch = np.clip(r_ch, 0, 255)
+    g_ch = np.clip(g_ch, 0, 255)
+    b_ch = np.clip(b_ch, 0, 255)
     out = ~zinfo["plate"] & (rr > R + 3)
     r_ch[out] = g_ch[out] = b_ch[out] = 0
     return np.stack([b_ch, g_ch, r_ch], axis=-1).astype(np.uint8)
 
 
 class MinIOUploadError(Exception):
-    """Raised when MinIO upload or structure setup fails. Avoids partial state confusion."""
     def __init__(self, message, cause=None, bucket=None, key=None, uploaded_keys=None):
         super().__init__(message)
         self.message = message
@@ -315,7 +305,6 @@ class MinIOUploadError(Exception):
 
 
 def _minio_remove_keys(client, bucket, keys):
-    """Best-effort remove objects; ignore errors (e.g. key missing)."""
     for key in keys:
         try:
             client.remove_object(bucket, key)
@@ -323,8 +312,25 @@ def _minio_remove_keys(client, bucket, keys):
             pass
 
 
+def load_processed_raw_paths(client):
+    """Load set of raw audio_path values already recorded in metadata CSV (for deduplication)."""
+    out = set()
+    try:
+        resp = client.get_object(MINIO_BUCKET, METADATA_KEY)
+        raw = resp.read().decode("utf-8")
+        resp.close()
+        resp.release_conn()
+    except Exception:
+        return out
+    reader = csv.DictReader(io.StringIO(raw))
+    for row in reader:
+        p = (row or {}).get("raw_audio_path", "").strip()
+        if p:
+            out.add(p)
+    return out
+
+
 def ensure_minio_structure(client):
-    """Ensure bucket exists. Folders are implicit via object keys."""
     try:
         if not client.bucket_exists(MINIO_BUCKET):
             client.make_bucket(MINIO_BUCKET)
@@ -334,6 +340,9 @@ def ensure_minio_structure(client):
             "audio/warm-path/.keep",
             "images/warm-path/.keep",
             "videos/warm-path/.keep",
+            "audio/hot-path/.keep",
+            "images/hot-path/.keep",
+            "videos/hot-path/.keep",
         ]
         for key in placeholders:
             try:
@@ -349,38 +358,24 @@ def ensure_minio_structure(client):
         ) from e
 
 
-def run():
-    if not HAS_MINIO:
-        raise RuntimeError("Install minio: pip install minio")
-
-    if not MINIO_ACCESS_KEY or not MINIO_SECRET_KEY:
-        raise RuntimeError("Set MINIO_ACCESS_KEY and MINIO_SECRET_KEY")
-
-    client = Minio(
-        MINIO_ENDPOINT,
-        access_key=MINIO_ACCESS_KEY,
-        secret_key=MINIO_SECRET_KEY,
-        secure=MINIO_SECURE,
-    )
-    ensure_minio_structure(client)
-
-    # --- Record 5 seconds ---
-    print("\n🎤  Get ready to record…")
-    for i in range(3, 0, -1):
-        print(f"   {i}…", flush=True)
-        time.sleep(1)
-    print("   🔴  RECORDING — make some noise!\n")
-    audio = sd.rec(int(DURATION * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype="float32")
-    sd.wait()
-    audio = audio.flatten()
-    print("✅  Recording complete!\n")
-
+def process_batch(client, audio, raw_audio_path=None, raw_bucket=None):
+    """Process one 5s batch: peak detection, video, image, MinIO upload, CSV.
+    If raw_audio_path and raw_bucket are set, move audio from raw to hot-path/<peak_freq>/<obs_id>-<peak_freq>.wav
+    (copy then delete; if copy fails, re-upload from memory and delete raw). CSV always gets the final path.
+    """
+    if len(audio) < SAMPLE_RATE:
+        return False
+    audio = np.asarray(audio, dtype=np.float64).flatten()
+    if len(audio) > DURATION * SAMPLE_RATE:
+        audio = audio[-int(DURATION * SAMPLE_RATE) :]
+    elif len(audio) < DURATION * SAMPLE_RATE:
+        return False
     pk = np.max(np.abs(audio))
     if pk > 1e-6:
         audio /= pk
     samples_per_frame = len(audio) // NUM_FRAMES
 
-    # --- Peak detection (harmonic-aware: frequency that appeared most over 5s) ---
+    # Select peak = frequency that was dominant for the longest time over the 5s
     window_len = int(SAMPLE_RATE * 0.25)
     hop = max(1, window_len // 2)
     window_candidates = []
@@ -391,12 +386,14 @@ def run():
         energy = float(np.sum(np.abs(np.fft.rfft(chunk)) ** 2))
         window_candidates.append((freq_bin, chunk.copy(), off, energy, hz))
     if not window_candidates:
-        raise RuntimeError("No window candidates for peak detection")
+        return False
+    # Harmonic-aware: pick fundamental that gets most (energy-weighted) support from divisors of window peaks
     dominant_freq_hz = harmonic_dominant_freq(window_candidates, max_harmonics=4, use_energy_weight=True)
     if dominant_freq_hz <= 0:
-        raise RuntimeError("Could not determine dominant frequency")
+        return False
     dominant_freq_bin = int(round(dominant_freq_hz))
     peak_freq_int = dominant_freq_bin
+    # Best window = highest energy among windows whose peak is this fundamental or a harmonic of it
     best = max(
         (c for c in window_candidates if c[0] > 0 and dominant_freq_bin > 0 and c[0] % dominant_freq_bin == 0),
         key=lambda c: c[3],
@@ -407,6 +404,7 @@ def run():
     peak_rms = float(np.sqrt(np.mean(peak_chunk**2)))
     peak_amplitude = float(np.max(np.abs(peak_chunk)))
     peak_time = best_offset / SAMPLE_RATE
+    # Top peak harmonics from this chunk for display / all_peak_frequencies_hz
     peak_fft = np.abs(np.fft.rfft(peak_chunk))
     peak_fft_norm = peak_fft / (np.max(peak_fft) + 1e-12)
     peaks_idx, _ = find_peaks(peak_fft_norm, height=0.06, distance=6, prominence=0.04)
@@ -418,15 +416,11 @@ def run():
     freq_resolution = SAMPLE_RATE / window_len
     peak_hz_values = peaks_idx * freq_resolution
 
-    print(f"   Dominant frequency: {dominant_freq_hz:.1f} Hz")
-
-    # --- Build grids ---
     vz = build_zones(SIM_RES)
     v_sources = build_zone_sources(SIM_RES, vz)
     iz = build_zones(IMG_SIM)
     i_sources = build_zone_sources(IMG_SIM, iz)
 
-    # Frame analysis
     frame_data = []
     for fi in range(NUM_FRAMES):
         s = fi * samples_per_frame
@@ -434,9 +428,10 @@ def run():
         zone_info = [analyse_frame(chunk, zi) for zi in range(N_ZONES)]
         frame_data.append(zone_info)
 
-    # --- Video ---
-    vy_g, vx_g = np.mgrid[0:VIDEO_RES, 0:VIDEO_RES]
-    vd = np.sqrt((vx_g - VIDEO_RES / 2.0) ** 2 + (vy_g - VIDEO_RES / 2.0) ** 2)
+    vd = np.sqrt(
+        (np.mgrid[0:VIDEO_RES, 0:VIDEO_RES][1] - VIDEO_RES / 2.0) ** 2
+        + (np.mgrid[0:VIDEO_RES, 0:VIDEO_RES][0] - VIDEO_RES / 2.0) ** 2
+    )
     vig = np.clip(1.0 - (vd / (VIDEO_RES * 0.50)) ** 4, 0.0, 1.0)
     frames = []
     font_vid = cv2.FONT_HERSHEY_SIMPLEX
@@ -472,14 +467,12 @@ def run():
         cv2.putText(raw, rms_txt, (12, VIDEO_RES - 14), font_vid, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(raw, rms_txt, (10, VIDEO_RES - 12), font_vid, 0.55, (220, 220, 200), 2, cv2.LINE_AA)
         frames.append(raw)
-
     cf_len = int(FPS * 0.6)
     for i in range(cf_len):
         alpha = i / cf_len
         idx = NUM_FRAMES - cf_len + i
         frames[idx] = cv2.addWeighted(frames[idx], 1.0 - alpha, frames[i], alpha, 0)
 
-    # --- Image ---
     img_zone_br = []
     for zi in range(N_ZONES):
         _, sfreqs, _ = analyse_frame(peak_chunk, zi)
@@ -495,8 +488,6 @@ def run():
     ivig = np.clip(1.0 - (ivd / (IMG_RES * 0.50)) ** 4, 0.0, 1.0)
     for ch in range(3):
         img[:, :, ch] = (img[:, :, ch].astype(np.float64) * ivig).astype(np.uint8)
-
-    # --- Labels (same as visualizer: CYMATICS title, freq, amp/rms, inner/outer zones) ---
     font = cv2.FONT_HERSHEY_SIMPLEX
     freq_label = f"{dominant_freq_hz:.0f} Hz"
     ts0 = cv2.getTextSize(freq_label, font, 2.0, 3)[0]
@@ -504,25 +495,21 @@ def run():
     ty = IMG_RES - 80
     cv2.putText(img, freq_label, (tx + 3, ty + 3), font, 2.0, (0, 0, 0), 5, cv2.LINE_AA)
     cv2.putText(img, freq_label, (tx, ty), font, 2.0, (255, 255, 255), 3, cv2.LINE_AA)
-
-    all_hz = "  |  ".join([f"{hz:.0f} Hz" for hz in peak_hz_values])
-    ts1 = cv2.getTextSize(all_hz, font, 0.7, 2)[0]
+    all_hz_str = "  |  ".join([f"{hz:.0f} Hz" for hz in peak_hz_values])
+    ts1 = cv2.getTextSize(all_hz_str, font, 0.7, 2)[0]
     tx2 = (IMG_RES - ts1[0]) // 2
-    cv2.putText(img, all_hz, (tx2 + 2, IMG_RES - 33), font, 0.7, (0, 0, 0), 3, cv2.LINE_AA)
-    cv2.putText(img, all_hz, (tx2, IMG_RES - 35), font, 0.7, (220, 210, 180), 2, cv2.LINE_AA)
-
+    cv2.putText(img, all_hz_str, (tx2 + 2, IMG_RES - 33), font, 0.7, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(img, all_hz_str, (tx2, IMG_RES - 35), font, 0.7, (220, 210, 180), 2, cv2.LINE_AA)
     title = "CYMATICS"
     ts2 = cv2.getTextSize(title, font, 1.2, 2)[0]
     ttx = (IMG_RES - ts2[0]) // 2
     cv2.putText(img, title, (ttx + 2, 62), font, 1.2, (0, 0, 0), 4, cv2.LINE_AA)
     cv2.putText(img, title, (ttx, 60), font, 1.2, (240, 230, 200), 2, cv2.LINE_AA)
-
     amp_label = f"Amplitude: {peak_amplitude:.3f}  |  RMS: {peak_rms:.3f}"
     ts3 = cv2.getTextSize(amp_label, font, 0.7, 2)[0]
     atx = (IMG_RES - ts3[0]) // 2
     cv2.putText(img, amp_label, (atx + 2, 97), font, 0.7, (0, 0, 0), 3, cv2.LINE_AA)
     cv2.putText(img, amp_label, (atx, 95), font, 0.7, (220, 210, 180), 2, cv2.LINE_AA)
-
     for zi, label in enumerate(["Center", "Outer"]):
         scale = ZONE_SPATIAL_SCALE[zi]
         ztxt = f"{label}: {N_SOURCES[zi]} src, k={scale:.0f}"
@@ -530,25 +517,42 @@ def run():
         cv2.putText(img, ztxt, (52, y_pos + 2), font, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(img, ztxt, (50, y_pos), font, 0.55, (180, 220, 240), 2, cv2.LINE_AA)
 
-    # --- Save to temp files and upload (with error handling to avoid partial state) ---
     obs_id = str(uuid.uuid4())
     ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    # CSV always gets the canonical path: hot-path/<peak_freq>/<obs_id>-<peak_freq>.wav
     audio_path = f"audio/{SOURCE}/{peak_freq_int}/{obs_id}-{peak_freq_int}.wav"
     image_path = f"images/{SOURCE}/{peak_freq_int}/{obs_id}-{peak_freq_int}.png"
     video_path = f"videos/{SOURCE}/{peak_freq_int}/{obs_id}-{peak_freq_int}.mp4"
-    # Track observation-specific keys for rollback only (never remove shared METADATA_KEY)
+    all_hz = "|".join(f"{hz:.0f}" for hz in peak_hz_values)
     uploaded_artifact_keys = []
-
     try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fa:
-            wav_path = fa.name
-        wavfile.write(wav_path, SAMPLE_RATE, (audio * 32767).astype(np.int16))
-        with open(wav_path, "rb") as f:
-            client.put_object(MINIO_BUCKET, audio_path, f, os.path.getsize(wav_path), "audio/wav")
-        os.remove(wav_path)
-        uploaded_artifact_keys.append(audio_path)
-        print(f"  Uploaded: {audio_path}")
-
+        if raw_audio_path and raw_bucket:
+            # Move raw → canonical path: try copy then delete; else re-upload and delete raw
+            try:
+                client.copy_object(
+                    MINIO_BUCKET,
+                    audio_path,
+                    CopySource(raw_bucket, raw_audio_path),
+                )
+                client.remove_object(raw_bucket, raw_audio_path)
+            except Exception:
+                wav_buf = BytesIO()
+                wavfile.write(wav_buf, SAMPLE_RATE, (audio * 32767).astype(np.int16))
+                wav_buf.seek(0)
+                client.put_object(MINIO_BUCKET, audio_path, wav_buf, wav_buf.getbuffer().nbytes, "audio/wav")
+                try:
+                    client.remove_object(raw_bucket, raw_audio_path)
+                except Exception:
+                    pass
+            uploaded_artifact_keys.append(audio_path)
+        else:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fa:
+                wav_path = fa.name
+            wavfile.write(wav_path, SAMPLE_RATE, (audio * 32767).astype(np.int16))
+            with open(wav_path, "rb") as f:
+                client.put_object(MINIO_BUCKET, audio_path, f, os.path.getsize(wav_path), "audio/wav")
+            os.remove(wav_path)
+            uploaded_artifact_keys.append(audio_path)
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as fi:
             img_path = fi.name
         cv2.imwrite(img_path, img)
@@ -556,8 +560,6 @@ def run():
             client.put_object(MINIO_BUCKET, image_path, f, os.path.getsize(img_path), "image/png")
         os.remove(img_path)
         uploaded_artifact_keys.append(image_path)
-        print(f"  Uploaded: {image_path}")
-
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as fv:
             video_path_tmp = fv.name
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -569,10 +571,6 @@ def run():
             client.put_object(MINIO_BUCKET, video_path, f, os.path.getsize(video_path_tmp), "video/mp4")
         os.remove(video_path_tmp)
         uploaded_artifact_keys.append(video_path)
-        print(f"  Uploaded: {video_path}")
-
-        # --- Metadata ---
-        all_hz = "|".join(f"{hz:.0f}" for hz in peak_hz_values)
         row = {
             "observation_id": obs_id,
             "timestamp": ts,
@@ -586,7 +584,8 @@ def run():
             "video_path": video_path,
             "all_peak_frequencies_hz": all_hz,
         }
-
+        if raw_audio_path:
+            row["raw_audio_path"] = raw_audio_path
         try:
             resp = client.get_object(MINIO_BUCKET, METADATA_KEY)
             existing = resp.read().decode("utf-8")
@@ -594,93 +593,104 @@ def run():
             resp.release_conn()
         except Exception:
             existing = None
-
         buf = io.StringIO()
         if existing:
             reader = csv.DictReader(io.StringIO(existing))
             fieldnames = list(reader.fieldnames or [])
             if "observation_id" not in fieldnames:
                 fieldnames.insert(0, "observation_id")
+            if "raw_audio_path" not in fieldnames and raw_audio_path:
+                fieldnames.append("raw_audio_path")
             rows_list = list(reader)
         else:
             fieldnames = list(row.keys())
             rows_list = []
-
         rows_list.append(row)
         writer = csv.DictWriter(buf, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows_list)
         csv_bytes = buf.getvalue().encode("utf-8")
         client.put_object(MINIO_BUCKET, METADATA_KEY, io.BytesIO(csv_bytes), len(csv_bytes), "text/csv")
-        print(f"  Updated: {METADATA_KEY}")
-
     except Exception as e:
         if uploaded_artifact_keys:
             _minio_remove_keys(client, MINIO_BUCKET, uploaded_artifact_keys)
-            raise MinIOUploadError(
-                f"MinIO upload failed after uploading {uploaded_artifact_keys!r}; rolled back. Last error: {e}",
-                cause=e,
-                bucket=MINIO_BUCKET,
-                key=uploaded_artifact_keys[-1] if uploaded_artifact_keys else None,
-                uploaded_keys=list(uploaded_artifact_keys),
-            ) from e
-        raise MinIOUploadError(
-            f"MinIO upload failed: {e}",
-            cause=e,
-            bucket=MINIO_BUCKET,
-        ) from e
+        print(f"  [hot] batch upload failed: {e}")
+        return False
+    print(f"  [hot] stored 5s batch → {peak_freq_int} Hz  obs_id={obs_id[:8]}...")
+    return True
 
-    # --- Notify via Kafka for transfer to landing-zone (same MinIO) ---
-    if HAS_KAFKA and KAFKA_BOOTSTRAP_SERVERS:
+
+def run():
+    if not HAS_KAFKA:
+        raise RuntimeError("Install kafka-python: pip install kafka-python")
+    if not MINIO_ACCESS_KEY or not MINIO_SECRET_KEY:
+        raise RuntimeError("Set MINIO_ACCESS_KEY and MINIO_SECRET_KEY")
+
+    client = Minio(
+        MINIO_ENDPOINT,
+        access_key=MINIO_ACCESS_KEY,
+        secret_key=MINIO_SECRET_KEY,
+        secure=MINIO_SECURE,
+    )
+    ensure_minio_structure(client)
+
+    servers = KAFKA_BOOTSTRAP_SERVERS.split(",")
+    consumer = KafkaConsumer(
+        KAFKA_TOPIC_HOT,
+        bootstrap_servers=servers,
+        value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+        auto_offset_reset="earliest",
+        enable_auto_commit=False,
+        group_id="landing-zone-hot-consumer",
+    )
+    processed_raw_paths = load_processed_raw_paths(client)
+    print(f"\n🔴  Hot-path consumer: topic={KAFKA_TOPIC_HOT} → MinIO (manual commit, skip already-processed)\n")
+
+    def commit_message(msg):
         try:
-            servers = KAFKA_BOOTSTRAP_SERVERS.split(",")
-            # Ensure topic exists (create only if missing; kafka-python >= 2.0 returns response object, no .items())
-            admin = KafkaAdminClient(bootstrap_servers=servers)
-            existing_topics = admin.list_topics()
-            if KAFKA_TOPIC_WARM not in existing_topics:
-                try:
-                    admin.create_topics(
-                        [NewTopic(name=KAFKA_TOPIC_WARM, num_partitions=1, replication_factor=1)],
-                        validate_only=False,
-                    )
-                except TopicAlreadyExistsError:
-                    pass
-            admin.close()
-
-            producer = KafkaProducer(
-                bootstrap_servers=servers,
-                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            )
-            payload = {
-                "observation_id": obs_id,
-                "bucket": MINIO_BUCKET,
-                "timestamp": ts,
-                "source": SOURCE,
-                "peak_frequency_hz": dominant_freq_hz,
-                "peak_time_s": peak_time,
-                "peak_amplitude": peak_amplitude,
-                "peak_rms": peak_rms,
-                "audio_path": audio_path,
-                "image_path": image_path,
-                "video_path": video_path,
-                "all_peak_frequencies_hz": all_hz,
-            }
-            producer.send(KAFKA_TOPIC_WARM, value=payload)
-            producer.flush()
-            producer.close()
-            print(f"  Produced to Kafka: {KAFKA_TOPIC_WARM}")
+            tp = TopicPartition(msg.topic, msg.partition)
+            # offset and leader_epoch must be int (protocol uses Int32; -1 = unknown)
+            next_offset = int(msg.offset) + 1
+            consumer.commit(offsets={
+                tp: OffsetAndMetadata(next_offset, "", -1)
+            })
         except Exception as e:
-            print(f"  Kafka produce skipped: {e}")
-    else:
-        if not HAS_KAFKA:
-            print("  Kafka skipped (install kafka-python to enable).")
-        elif not KAFKA_BOOTSTRAP_SERVERS:
-            print("  Kafka skipped (KAFKA_BOOTSTRAP_SERVERS not set).")
+            print(f"  [hot consumer] commit failed: {e}")
 
-    print("\n✅  Observation stored in MinIO.")
-    print(f"   Observation ID: {obs_id}")
-    print(f"   Peak: {dominant_freq_hz:.1f} Hz  |  source: {SOURCE}")
-    print(f"   Metadata: {METADATA_KEY}\n")
+    for message in consumer:
+        try:
+            value = message.value
+            if not value or "audio_path" not in value or "bucket" not in value:
+                commit_message(message)
+                continue
+            bucket = value["bucket"]
+            raw_path = value["audio_path"]
+            if raw_path in processed_raw_paths:
+                commit_message(message)
+                continue
+            try:
+                resp = client.get_object(bucket, raw_path)
+                wav_bytes = resp.read()
+                resp.close()
+                resp.release_conn()
+            except Exception as e:
+                # Already moved/deleted (e.g. already processed) → skip and commit to avoid NoSuchKey spam
+                processed_raw_paths.add(raw_path)
+                commit_message(message)
+                continue
+            sr, data = wavfile.read(BytesIO(wav_bytes))
+            if data.dtype == np.int16:
+                audio = data.astype(np.float32) / 32768.0
+            else:
+                audio = data.astype(np.float32).flatten()
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
+            ok = process_batch(client, audio, raw_audio_path=raw_path, raw_bucket=bucket)
+            if ok:
+                processed_raw_paths.add(raw_path)
+                commit_message(message)
+        except Exception as e:
+            print(f"  [hot consumer] message error: {e}")
 
 
 if __name__ == "__main__":
