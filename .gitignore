@@ -1,0 +1,17 @@
+# Environment variables - NEVER upload this
+.env
+
+# Downloaded datasets (too large for GitHub)
+data/
+freesound_audio/
+freesound_meta/
+landing_zone/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
