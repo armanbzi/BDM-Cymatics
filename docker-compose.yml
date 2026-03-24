@@ -59,3 +59,37 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+
+  airflow:
+    image: apache/airflow:2.9.1
+    container_name: cymatics-airflow
+    depends_on:
+      - zookeeper
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=SequentialExecutor 
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/airflow.db
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_SECURE=${MINIO_SECURE}
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - FREESOUND_API_KEY=${FREESOUND_API_KEY}
+      - FREESOUND_CLIENT_ID=${FREESOUND_CLIENT_ID}
+    
+      - _PIP_ADDITIONAL_REQUIREMENTS=minio python-dotenv deltalake pandas pyarrow requests
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./:/opt/airflow/project  
+    ports:
+      - "8080:8080"
+    
+    command: standalone 
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s

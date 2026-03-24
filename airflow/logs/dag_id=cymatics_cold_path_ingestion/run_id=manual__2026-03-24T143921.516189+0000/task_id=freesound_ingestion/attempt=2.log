@@ -1,0 +1,110 @@
+[2026-03-24T14:44:58.784+0000] {local_task_job_runner.py:120} INFO - ::group::Pre task execution logs
+[2026-03-24T14:44:58.836+0000] {taskinstance.py:2076} INFO - Dependencies all met for dep_context=non-requeueable deps ti=<TaskInstance: cymatics_cold_path_ingestion.freesound_ingestion manual__2026-03-24T14:39:21.516189+00:00 [queued]>
+[2026-03-24T14:44:58.844+0000] {taskinstance.py:2076} INFO - Dependencies all met for dep_context=requeueable deps ti=<TaskInstance: cymatics_cold_path_ingestion.freesound_ingestion manual__2026-03-24T14:39:21.516189+00:00 [queued]>
+[2026-03-24T14:44:58.845+0000] {taskinstance.py:2306} INFO - Starting attempt 2 of 2
+[2026-03-24T14:44:58.863+0000] {taskinstance.py:2330} INFO - Executing <Task(BashOperator): freesound_ingestion> on 2026-03-24 14:39:21.516189+00:00
+[2026-03-24T14:44:58.871+0000] {standard_task_runner.py:63} INFO - Started process 394 to run task
+[2026-03-24T14:44:58.891+0000] {standard_task_runner.py:90} INFO - Running: ['airflow', 'tasks', 'run', 'cymatics_cold_path_ingestion', 'freesound_ingestion', 'manual__2026-03-24T14:39:21.516189+00:00', '--job-id', '4', '--raw', '--subdir', 'DAGS_FOLDER/cymatics_ingestion_dag.py', '--cfg-path', '/tmp/tmp03nh_l_i']
+[2026-03-24T14:44:58.910+0000] {standard_task_runner.py:91} INFO - Job 4: Subtask freesound_ingestion
+[2026-03-24T14:44:59.369+0000] {task_command.py:426} INFO - Running <TaskInstance: cymatics_cold_path_ingestion.freesound_ingestion manual__2026-03-24T14:39:21.516189+00:00 [running]> on host bcb287cd03d2
+[2026-03-24T14:44:59.720+0000] {taskinstance.py:2648} INFO - Exporting env vars: AIRFLOW_CTX_DAG_OWNER='cymatics' AIRFLOW_CTX_DAG_ID='cymatics_cold_path_ingestion' AIRFLOW_CTX_TASK_ID='freesound_ingestion' AIRFLOW_CTX_EXECUTION_DATE='2026-03-24T14:39:21.516189+00:00' AIRFLOW_CTX_TRY_NUMBER='2' AIRFLOW_CTX_DAG_RUN_ID='manual__2026-03-24T14:39:21.516189+00:00'
+[2026-03-24T14:44:59.727+0000] {taskinstance.py:430} INFO - ::endgroup::
+[2026-03-24T14:44:59.815+0000] {subprocess.py:63} INFO - Tmp dir root location: /tmp
+[2026-03-24T14:44:59.820+0000] {subprocess.py:75} INFO - Running command: ['/usr/bin/bash', '-c', 'cd /opt/airflow/project && python ingestion/freesound_ingestion.py']
+[2026-03-24T14:44:59.838+0000] {subprocess.py:86} INFO - Output:
+[2026-03-24T14:45:10.447+0000] {subprocess.py:93} INFO - ==================================================
+[2026-03-24T14:45:10.449+0000] {subprocess.py:93} INFO - FREESOUND INGESTION — Starting
+[2026-03-24T14:45:10.450+0000] {subprocess.py:93} INFO - ==================================================
+[2026-03-24T14:45:10.451+0000] {subprocess.py:93} INFO - Traceback (most recent call last):
+[2026-03-24T14:45:10.452+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/connection.py", line 198, in _new_conn
+[2026-03-24T14:45:10.452+0000] {subprocess.py:93} INFO -     sock = connection.create_connection(
+[2026-03-24T14:45:10.453+0000] {subprocess.py:93} INFO -            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-03-24T14:45:10.454+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/util/connection.py", line 85, in create_connection
+[2026-03-24T14:45:10.455+0000] {subprocess.py:93} INFO -     raise err
+[2026-03-24T14:45:10.455+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/util/connection.py", line 73, in create_connection
+[2026-03-24T14:45:10.456+0000] {subprocess.py:93} INFO -     sock.connect(sa)
+[2026-03-24T14:45:10.457+0000] {subprocess.py:93} INFO - ConnectionRefusedError: [Errno 111] Connection refused
+[2026-03-24T14:45:10.457+0000] {subprocess.py:93} INFO - 
+[2026-03-24T14:45:10.458+0000] {subprocess.py:93} INFO - The above exception was the direct cause of the following exception:
+[2026-03-24T14:45:10.458+0000] {subprocess.py:93} INFO - 
+[2026-03-24T14:45:10.459+0000] {subprocess.py:93} INFO - Traceback (most recent call last):
+[2026-03-24T14:45:10.460+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/connectionpool.py", line 793, in urlopen
+[2026-03-24T14:45:10.461+0000] {subprocess.py:93} INFO -     response = self._make_request(
+[2026-03-24T14:45:10.461+0000] {subprocess.py:93} INFO -                ^^^^^^^^^^^^^^^^^^^
+[2026-03-24T14:45:10.462+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/connectionpool.py", line 496, in _make_request
+[2026-03-24T14:45:10.462+0000] {subprocess.py:93} INFO -     conn.request(
+[2026-03-24T14:45:10.463+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/connection.py", line 400, in request
+[2026-03-24T14:45:10.464+0000] {subprocess.py:93} INFO -     self.endheaders()
+[2026-03-24T14:45:10.464+0000] {subprocess.py:93} INFO -   File "/usr/local/lib/python3.12/http/client.py", line 1331, in endheaders
+[2026-03-24T14:45:10.465+0000] {subprocess.py:93} INFO -     self._send_output(message_body, encode_chunked=encode_chunked)
+[2026-03-24T14:45:10.466+0000] {subprocess.py:93} INFO -   File "/usr/local/lib/python3.12/http/client.py", line 1091, in _send_output
+[2026-03-24T14:45:10.466+0000] {subprocess.py:93} INFO -     self.send(msg)
+[2026-03-24T14:45:10.467+0000] {subprocess.py:93} INFO -   File "/usr/local/lib/python3.12/http/client.py", line 1035, in send
+[2026-03-24T14:45:10.468+0000] {subprocess.py:93} INFO -     self.connect()
+[2026-03-24T14:45:10.468+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/connection.py", line 238, in connect
+[2026-03-24T14:45:10.469+0000] {subprocess.py:93} INFO -     self.sock = self._new_conn()
+[2026-03-24T14:45:10.469+0000] {subprocess.py:93} INFO -                 ^^^^^^^^^^^^^^^^
+[2026-03-24T14:45:10.470+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/connection.py", line 213, in _new_conn
+[2026-03-24T14:45:10.471+0000] {subprocess.py:93} INFO -     raise NewConnectionError(
+[2026-03-24T14:45:10.471+0000] {subprocess.py:93} INFO - urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPConnection object at 0x723c30b5b770>: Failed to establish a new connection: [Errno 111] Connection refused
+[2026-03-24T14:45:10.472+0000] {subprocess.py:93} INFO - 
+[2026-03-24T14:45:10.473+0000] {subprocess.py:93} INFO - The above exception was the direct cause of the following exception:
+[2026-03-24T14:45:10.473+0000] {subprocess.py:93} INFO - 
+[2026-03-24T14:45:10.474+0000] {subprocess.py:93} INFO - Traceback (most recent call last):
+[2026-03-24T14:45:10.475+0000] {subprocess.py:93} INFO -   File "/opt/airflow/project/ingestion/freesound_ingestion.py", line 80, in <module>
+[2026-03-24T14:45:10.475+0000] {subprocess.py:93} INFO -     ensure_bucket()
+[2026-03-24T14:45:10.476+0000] {subprocess.py:93} INFO -   File "/opt/airflow/project/ingestion/freesound_ingestion.py", line 38, in ensure_bucket
+[2026-03-24T14:45:10.477+0000] {subprocess.py:93} INFO -     if not minio_client.bucket_exists(BUCKET):
+[2026-03-24T14:45:10.477+0000] {subprocess.py:93} INFO -            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-03-24T14:45:10.478+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/minio/api.py", line 700, in bucket_exists
+[2026-03-24T14:45:10.479+0000] {subprocess.py:93} INFO -     self._execute("HEAD", bucket_name)
+[2026-03-24T14:45:10.480+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/minio/api.py", line 441, in _execute
+[2026-03-24T14:45:10.480+0000] {subprocess.py:93} INFO -     region = self._get_region(bucket_name)
+[2026-03-24T14:45:10.481+0000] {subprocess.py:93} INFO -              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-03-24T14:45:10.482+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/minio/api.py", line 498, in _get_region
+[2026-03-24T14:45:10.482+0000] {subprocess.py:93} INFO -     response = self._url_open(
+[2026-03-24T14:45:10.483+0000] {subprocess.py:93} INFO -                ^^^^^^^^^^^^^^^
+[2026-03-24T14:45:10.484+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/minio/api.py", line 306, in _url_open
+[2026-03-24T14:45:10.485+0000] {subprocess.py:93} INFO -     response = self._http.urlopen(
+[2026-03-24T14:45:10.485+0000] {subprocess.py:93} INFO -                ^^^^^^^^^^^^^^^^^^^
+[2026-03-24T14:45:10.486+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/poolmanager.py", line 444, in urlopen
+[2026-03-24T14:45:10.487+0000] {subprocess.py:93} INFO -     response = conn.urlopen(method, u.request_uri, **kw)
+[2026-03-24T14:45:10.487+0000] {subprocess.py:93} INFO -                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-03-24T14:45:10.488+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/connectionpool.py", line 877, in urlopen
+[2026-03-24T14:45:10.489+0000] {subprocess.py:93} INFO -     return self.urlopen(
+[2026-03-24T14:45:10.490+0000] {subprocess.py:93} INFO -            ^^^^^^^^^^^^^
+[2026-03-24T14:45:10.490+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/connectionpool.py", line 877, in urlopen
+[2026-03-24T14:45:10.491+0000] {subprocess.py:93} INFO -     return self.urlopen(
+[2026-03-24T14:45:10.492+0000] {subprocess.py:93} INFO -            ^^^^^^^^^^^^^
+[2026-03-24T14:45:10.492+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/connectionpool.py", line 877, in urlopen
+[2026-03-24T14:45:10.493+0000] {subprocess.py:93} INFO -     return self.urlopen(
+[2026-03-24T14:45:10.494+0000] {subprocess.py:93} INFO -            ^^^^^^^^^^^^^
+[2026-03-24T14:45:10.494+0000] {subprocess.py:93} INFO -   [Previous line repeated 2 more times]
+[2026-03-24T14:45:10.495+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/connectionpool.py", line 847, in urlopen
+[2026-03-24T14:45:10.496+0000] {subprocess.py:93} INFO -     retries = retries.increment(
+[2026-03-24T14:45:10.496+0000] {subprocess.py:93} INFO -               ^^^^^^^^^^^^^^^^^^
+[2026-03-24T14:45:10.497+0000] {subprocess.py:93} INFO -   File "/home/airflow/.local/lib/python3.12/site-packages/urllib3/util/retry.py", line 515, in increment
+[2026-03-24T14:45:10.498+0000] {subprocess.py:93} INFO -     raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+[2026-03-24T14:45:10.498+0000] {subprocess.py:93} INFO -     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-03-24T14:45:10.499+0000] {subprocess.py:93} INFO - urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='localhost', port=9000): Max retries exceeded with url: /landing-zone?location= (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x723c30b5b770>: Failed to establish a new connection: [Errno 111] Connection refused'))
+[2026-03-24T14:45:10.638+0000] {subprocess.py:97} INFO - Command exited with return code 1
+[2026-03-24T14:45:10.641+0000] {taskinstance.py:441} INFO - ::group::Post task execution logs
+[2026-03-24T14:45:10.649+0000] {taskinstance.py:2905} ERROR - Task failed with exception
+Traceback (most recent call last):
+  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py", line 465, in _execute_task
+    result = _execute_callable(context=context, **execute_callable_kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py", line 432, in _execute_callable
+    return execute_callable(context=context, **execute_callable_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/baseoperator.py", line 400, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/operators/bash.py", line 243, in execute
+    raise AirflowException(
+airflow.exceptions.AirflowException: Bash command failed. The command returned a non-zero exit code 1.
+[2026-03-24T14:45:10.655+0000] {taskinstance.py:1206} INFO - Marking task as FAILED. dag_id=cymatics_cold_path_ingestion, task_id=freesound_ingestion, run_id=manual__2026-03-24T14:39:21.516189+00:00, execution_date=20260324T143921, start_date=20260324T144458, end_date=20260324T144510
+[2026-03-24T14:45:10.674+0000] {standard_task_runner.py:110} ERROR - Failed to execute job 4 for task freesound_ingestion (Bash command failed. The command returned a non-zero exit code 1.; 394)
+[2026-03-24T14:45:10.729+0000] {local_task_job_runner.py:240} INFO - Task exited with return code 1
+[2026-03-24T14:45:10.748+0000] {taskinstance.py:3498} INFO - 0 downstream tasks scheduled from follow-on schedule check
+[2026-03-24T14:45:10.757+0000] {local_task_job_runner.py:222} INFO - ::endgroup::
