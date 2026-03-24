@@ -21,3 +21,6 @@ kafka/
 
 # MinIO internal files
 minio/
+
+# Airflow logs
+airflow/logs/
