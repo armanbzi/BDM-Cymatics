@@ -282,7 +282,7 @@ def ensure_minio_raw(client):
         client.put_object(MINIO_BUCKET, f"{RAW_AUDIO_PREFIX}/.keep", BytesIO(b""), 0)
 
 
-def send_batch_to_kafka(producer, client, batch):
+def send_batch_to_kafka(producer, client, batch, device_name="-"):
     """Upload 5s audio to MinIO, then send metadata-only message to Kafka (daemon-safe)."""
     audio = np.asarray(batch, dtype=np.float64).flatten()
     if len(audio) > DURATION * SAMPLE_RATE:
@@ -315,6 +315,7 @@ def send_batch_to_kafka(producer, client, batch):
         "timestamp": ts,
         "sample_rate": SAMPLE_RATE,
         "duration": DURATION,
+        "device": device_name,
     }
     try:
         producer.send(KAFKA_TOPIC, value=payload)
@@ -371,6 +372,12 @@ def run():
             print(_status)
         audio_queue.put(indata.copy().flatten())
 
+    try:
+        dev_info = sd.query_devices(sd.default.device[0])
+        device_name = dev_info.get("name", "-")
+    except Exception:
+        device_name = "-"
+
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE,
         channels=1,
@@ -403,7 +410,7 @@ def run():
             if len(buffer) >= batch_samples:
                 batch = np.array(buffer[:batch_samples], dtype=np.float32)
                 buffer = buffer[batch_samples:]
-                threading.Thread(target=send_batch_to_kafka, args=(producer, client, batch), daemon=True).start()
+                threading.Thread(target=send_batch_to_kafka, args=(producer, client, batch, device_name), daemon=True).start()
 
             live_chunk = buffer[-live_samples:] if len(buffer) >= live_samples else buffer
             if len(live_chunk) < 64:

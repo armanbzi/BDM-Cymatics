@@ -14,6 +14,7 @@ import io
 import csv
 import json
 import tempfile
+import time
 import uuid
 from collections import Counter
 from io import BytesIO
@@ -27,9 +28,13 @@ import numpy as np
 import cv2
 from scipy.signal import find_peaks
 from scipy.io import wavfile
+from scipy.fft import dct
 
 from minio import Minio
 from minio.commonconfig import CopySource
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 try:
     from kafka import KafkaConsumer
@@ -53,6 +58,103 @@ KAFKA_TOPIC_HOT = os.environ.get("KAFKA_TOPIC_HOT", "landing-zone-events-hot-pat
 
 SOURCE = "hot-path"
 METADATA_KEY = "metadata/observations.csv"
+PROCESSING_VERSION = "1.1.0"
+
+METADATA_EXTRA_FIELDS = [
+    "uuid",
+    "source_id",
+    "time_recorded",
+    "processing_version",
+    "duration",
+    "spectral_centroid_hz",
+    "spectral_bandwidth_hz",
+    "spectral_rolloff_hz",
+    "spectral_flatness",
+    "MFCCs",
+    "spectral_entropy",
+    "zero_crossing_rate",
+    "signal_energy",
+    "harmonic_energy_ratio",
+    "symmetry_score",
+    "pattern_stability_score",
+    "image_resolution",
+    "video_resolution",
+    "audio_size",
+    "image_size",
+    "video_size",
+    "processing_time(seconds)",
+    "kafka_topic",
+    "device",
+    "audio_format",
+    "loudness",
+]
+LEGACY_METADATA_FIELDS = [
+    "source",
+    "peak_frequency_hz",
+    "peak_time_s",
+    "peak_amplitude",
+    "peak_rms",
+    "audio_path",
+    "image_path",
+    "video_path",
+    "all_peak_frequencies_hz",
+]
+
+# =============================================================================
+#  Parquet / Delta Lake helpers
+# =============================================================================
+PARQUET_KEY = "metadata/observations.parquet"
+def _rows_to_table(rows):
+    if not rows:
+        return None
+    all_keys = list(dict.fromkeys(k for row in rows for k in row))
+    arrays = {key: [str(row.get(key, "")) for row in rows] for key in all_keys}
+    return pa.table(arrays)
+
+
+def _read_parquet_from_minio(client, bucket, key=PARQUET_KEY):
+    try:
+        resp = client.get_object(bucket, key)
+        data = resp.read()
+        resp.close(); resp.release_conn()
+        return pq.read_table(io.BytesIO(data))
+    except Exception:
+        return None
+
+
+def _write_parquet_to_minio(client, bucket, table, key=PARQUET_KEY):
+    buf = io.BytesIO()
+    pq.write_table(table, buf)
+    buf.seek(0)
+    client.put_object(bucket, key, buf, len(buf.getvalue()), "application/octet-stream")
+
+
+def _unify_schemas(existing_table, new_table):
+    if existing_table is None:
+        return new_table
+    if new_table is None:
+        return existing_table
+    all_names = list(dict.fromkeys(
+        list(existing_table.schema.names) + list(new_table.schema.names)
+    ))
+    def pad_table(tbl, target_names):
+        for name in target_names:
+            if name not in tbl.schema.names:
+                tbl = tbl.append_column(name, pa.array([""] * tbl.num_rows, type=pa.string()))
+        return tbl.select(target_names)
+    return pa.concat_tables([pad_table(existing_table, all_names), pad_table(new_table, all_names)])
+
+
+def update_parquet(client, bucket, new_rows):
+    new_table = _rows_to_table(new_rows)
+    if new_table is None:
+        return _read_parquet_from_minio(client, bucket)
+    existing = _read_parquet_from_minio(client, bucket)
+    combined = _unify_schemas(existing, new_table)
+    _write_parquet_to_minio(client, bucket, combined)
+    print(f"  Updated: {PARQUET_KEY}  ({combined.num_rows} total rows)")
+    return combined
+
 
 # =============================================================================
 #  Cymatics settings
@@ -294,6 +396,163 @@ def render_composite(zone_br, zinfo, t, gs):
     return np.stack([b_ch, g_ch, r_ch], axis=-1).astype(np.uint8)
 
 
+def spectral_features_hz(audio, sample_rate=SAMPLE_RATE):
+    x = np.asarray(audio, dtype=np.float64).flatten()
+    n = len(x)
+    if n < 2:
+        z = 0.0
+        return z, z, z, z, z
+    mag = np.abs(np.fft.rfft(x)) + 1e-20
+    freqs = np.fft.rfftfreq(n, 1.0 / sample_rate)
+    p = mag ** 2
+    s = float(p.sum()) + 1e-20
+    centroid = float((freqs * p).sum() / s)
+    bandwidth = float(np.sqrt(((freqs - centroid) ** 2 * p).sum() / s))
+    cum = np.cumsum(p)
+    rolloff_idx = int(np.searchsorted(cum, 0.85 * s))
+    rolloff = float(freqs[min(rolloff_idx, len(freqs) - 1)])
+    geo = float(np.exp(np.mean(np.log(mag))))
+    arith = float(np.mean(mag))
+    flatness = float(geo / (arith + 1e-20))
+    signal_energy = float(np.sum(x ** 2))
+    return centroid, bandwidth, rolloff, flatness, signal_energy
+
+
+def _hz_to_mel(f):
+    return 2595.0 * np.log10(1.0 + np.maximum(f, 0.0) / 700.0)
+
+
+def _mel_to_hz(m):
+    return 700.0 * (10.0 ** (m / 2595.0) - 1.0)
+
+
+def _mel_filterbank(n_fft, n_mels, sample_rate):
+    n_freqs = n_fft // 2 + 1
+    mel_min, mel_max = _hz_to_mel(0.0), _hz_to_mel(sample_rate / 2.0)
+    mels = np.linspace(mel_min, mel_max, n_mels + 2)
+    hz = _mel_to_hz(mels)
+    bins = np.floor((n_fft + 1) * hz / sample_rate).astype(int)
+    bins = np.clip(bins, 0, n_freqs - 1)
+    fbank = np.zeros((n_mels, n_freqs), dtype=np.float64)
+    for m in range(1, n_mels + 1):
+        left, center, right = int(bins[m - 1]), int(bins[m]), int(bins[m + 1])
+        if center > left:
+            for k in range(left, center):
+                fbank[m - 1, k] = (k - left) / float(center - left)
+        if right > center:
+            for k in range(center, right):
+                fbank[m - 1, k] = (right - k) / float(right - center)
+    return fbank
+
+
+def mfccs_mean_json(audio, sample_rate=SAMPLE_RATE, n_mfcc=13, n_fft=2048, hop_length=None, n_mels=40):
+    x = np.asarray(audio, dtype=np.float64).flatten()
+    if hop_length is None:
+        hop_length = max(n_fft // 4, 1)
+    if len(x) < n_fft:
+        return json.dumps([0.0] * n_mfcc)
+    win = np.hanning(n_fft)
+    fbank = _mel_filterbank(n_fft, n_mels, sample_rate)
+    n_frames = 1 + (len(x) - n_fft) // hop_length
+    if n_frames < 1:
+        return json.dumps([0.0] * n_mfcc)
+    mfcc_acc = np.zeros(n_mfcc, dtype=np.float64)
+    for i in range(n_frames):
+        frame = x[i * hop_length : i * hop_length + n_fft] * win
+        spec = np.abs(np.fft.rfft(frame, n=n_fft)) ** 2
+        mel = np.maximum(np.dot(fbank, spec), 1e-10)
+        log_mel = np.log(mel)
+        coeffs = dct(log_mel, type=2, norm="ortho")[:n_mfcc]
+        mfcc_acc += coeffs
+    mean_mfcc = mfcc_acc / n_frames
+    return json.dumps([round(float(v), 6) for v in mean_mfcc])
+
+
+def spectral_entropy_nats(audio, sample_rate=SAMPLE_RATE):
+    x = np.asarray(audio, dtype=np.float64).flatten()
+    n = len(x)
+    if n < 2:
+        return 0.0
+    power = np.abs(np.fft.rfft(x)) ** 2
+    p = power / (np.sum(power) + 1e-20)
+    p = p[p > 1e-20]
+    return float(-np.sum(p * np.log(p)))
+
+
+def zero_crossing_rate(audio):
+    x = np.asarray(audio, dtype=np.float64).flatten()
+    n = len(x)
+    if n < 2:
+        return 0.0
+    signs = np.sign(x)
+    signs[signs == 0] = 1.0
+    return float(np.sum(np.abs(np.diff(signs)) > 0) / (n - 1))
+
+
+def loudness_db(audio):
+    rms = float(np.sqrt(np.mean(np.asarray(audio, dtype=np.float64) ** 2)))
+    return float(20.0 * np.log10(rms + 1e-20))
+
+
+def harmonic_energy_ratio(audio, sample_rate, fundamental_hz, max_harmonics=8, half_width_hz=None):
+    x = np.asarray(audio, dtype=np.float64).flatten()
+    n = len(x)
+    if n < 2 or fundamental_hz <= 0:
+        return 0.0
+    power = np.abs(np.fft.rfft(x)) ** 2
+    freqs = np.fft.rfftfreq(n, 1.0 / sample_rate)
+    total = float(power.sum()) + 1e-20
+    if half_width_hz is None:
+        half_width_hz = max(sample_rate / n * 2.0, 5.0)
+    h_sum = 0.0
+    for k in range(1, max_harmonics + 1):
+        fk = fundamental_hz * k
+        if fk >= sample_rate / 2:
+            break
+        mask = np.abs(freqs - fk) <= half_width_hz
+        h_sum += float(power[mask].sum())
+    return float(h_sum / total)
+
+
+def symmetry_score_cymatics(img_bgr):
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float64)
+    g = gray.ravel()
+    gl = np.fliplr(gray).ravel()
+    g = g - g.mean()
+    gl = gl - gl.mean()
+    denom = (np.linalg.norm(g) * np.linalg.norm(gl)) + 1e-12
+    c = float(np.dot(g, gl) / denom)
+    return float(np.clip(0.5 * (c + 1.0), 0.0, 1.0))
+
+
+def pattern_stability_score(frames_bgr, step=3):
+    if len(frames_bgr) < 2:
+        return 1.0
+    corrs = []
+    prev = cv2.cvtColor(frames_bgr[0], cv2.COLOR_BGR2GRAY).astype(np.float64).ravel()
+    prev = prev / (np.linalg.norm(prev) + 1e-12)
+    for i in range(step, len(frames_bgr), step):
+        cur = cv2.cvtColor(frames_bgr[i], cv2.COLOR_BGR2GRAY).astype(np.float64).ravel()
+        cur = cur / (np.linalg.norm(cur) + 1e-12)
+        corrs.append(float(np.dot(prev, cur)))
+        prev = cur
+    return float(np.mean(corrs)) if corrs else 1.0
+
+
+def merge_metadata_fieldnames(existing_names, row_keys):
+    out = list(existing_names or [])
+    seen = set(out)
+    for k in METADATA_EXTRA_FIELDS + LEGACY_METADATA_FIELDS:
+        if k not in seen:
+            seen.add(k)
+            out.append(k)
+    for k in row_keys:
+        if k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
 class MinIOUploadError(Exception):
     def __init__(self, message, cause=None, bucket=None, key=None, uploaded_keys=None):
         super().__init__(message)
@@ -310,24 +569,6 @@ def _minio_remove_keys(client, bucket, keys):
             client.remove_object(bucket, key)
         except Exception:
             pass
-
-
-def load_processed_raw_paths(client):
-    """Load set of raw audio_path values already recorded in metadata CSV (for deduplication)."""
-    out = set()
-    try:
-        resp = client.get_object(MINIO_BUCKET, METADATA_KEY)
-        raw = resp.read().decode("utf-8")
-        resp.close()
-        resp.release_conn()
-    except Exception:
-        return out
-    reader = csv.DictReader(io.StringIO(raw))
-    for row in reader:
-        p = (row or {}).get("raw_audio_path", "").strip()
-        if p:
-            out.add(p)
-    return out
 
 
 def ensure_minio_structure(client):
@@ -358,7 +599,7 @@ def ensure_minio_structure(client):
         ) from e
 
 
-def process_batch(client, audio, raw_audio_path=None, raw_bucket=None):
+def process_batch(client, audio, raw_audio_path=None, raw_bucket=None, device_name="-"):
     """Process one 5s batch: peak detection, video, image, MinIO upload, CSV.
     If raw_audio_path and raw_bucket are set, move audio from raw to hot-path/<peak_freq>/<obs_id>-<peak_freq>.wav
     (copy then delete; if copy fails, re-upload from memory and delete raw). CSV always gets the final path.
@@ -373,6 +614,8 @@ def process_batch(client, audio, raw_audio_path=None, raw_bucket=None):
     pk = np.max(np.abs(audio))
     if pk > 1e-6:
         audio /= pk
+    t_proc_start = time.perf_counter()
+    audio_duration_s = float(len(audio) / SAMPLE_RATE)
     samples_per_frame = len(audio) // NUM_FRAMES
 
     # Select peak = frequency that was dominant for the longest time over the 5s
@@ -415,6 +658,12 @@ def process_batch(client, audio, raw_audio_path=None, raw_bucket=None):
     peaks_idx = peaks_idx[top_order]
     freq_resolution = SAMPLE_RATE / window_len
     peak_hz_values = peaks_idx * freq_resolution
+
+    sc_hz, sbw_hz, srol_hz, sflat, signal_energy = spectral_features_hz(audio)
+    harm_ratio = harmonic_energy_ratio(audio, SAMPLE_RATE, dominant_freq_hz)
+    mfccs_json = mfccs_mean_json(audio)
+    spec_entropy = spectral_entropy_nats(audio)
+    zcr = zero_crossing_rate(audio)
 
     vz = build_zones(SIM_RES)
     v_sources = build_zone_sources(SIM_RES, vz)
@@ -473,6 +722,8 @@ def process_batch(client, audio, raw_audio_path=None, raw_bucket=None):
         idx = NUM_FRAMES - cf_len + i
         frames[idx] = cv2.addWeighted(frames[idx], 1.0 - alpha, frames[i], alpha, 0)
 
+    pattern_stability = pattern_stability_score(frames)
+
     img_zone_br = []
     for zi in range(N_ZONES):
         _, sfreqs, _ = analyse_frame(peak_chunk, zi)
@@ -517,6 +768,10 @@ def process_batch(client, audio, raw_audio_path=None, raw_bucket=None):
         cv2.putText(img, ztxt, (52, y_pos + 2), font, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(img, ztxt, (50, y_pos), font, 0.55, (180, 220, 240), 2, cv2.LINE_AA)
 
+    symmetry_score = symmetry_score_cymatics(img)
+    image_resolution = f"{IMG_RES}x{IMG_RES}"
+    video_resolution = f"{VIDEO_RES}x{VIDEO_RES}"
+
     obs_id = str(uuid.uuid4())
     ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     # CSV always gets the canonical path: hot-path/<peak_freq>/<obs_id>-<peak_freq>.wav
@@ -535,11 +790,13 @@ def process_batch(client, audio, raw_audio_path=None, raw_bucket=None):
                     CopySource(raw_bucket, raw_audio_path),
                 )
                 client.remove_object(raw_bucket, raw_audio_path)
+                audio_size = int(client.stat_object(MINIO_BUCKET, audio_path).size)
             except Exception:
                 wav_buf = BytesIO()
                 wavfile.write(wav_buf, SAMPLE_RATE, (audio * 32767).astype(np.int16))
+                audio_size = wav_buf.getbuffer().nbytes
                 wav_buf.seek(0)
-                client.put_object(MINIO_BUCKET, audio_path, wav_buf, wav_buf.getbuffer().nbytes, "audio/wav")
+                client.put_object(MINIO_BUCKET, audio_path, wav_buf, audio_size, "audio/wav")
                 try:
                     client.remove_object(raw_bucket, raw_audio_path)
                 except Exception:
@@ -549,15 +806,17 @@ def process_batch(client, audio, raw_audio_path=None, raw_bucket=None):
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fa:
                 wav_path = fa.name
             wavfile.write(wav_path, SAMPLE_RATE, (audio * 32767).astype(np.int16))
+            audio_size = os.path.getsize(wav_path)
             with open(wav_path, "rb") as f:
-                client.put_object(MINIO_BUCKET, audio_path, f, os.path.getsize(wav_path), "audio/wav")
+                client.put_object(MINIO_BUCKET, audio_path, f, audio_size, "audio/wav")
             os.remove(wav_path)
             uploaded_artifact_keys.append(audio_path)
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as fi:
             img_path = fi.name
         cv2.imwrite(img_path, img)
+        image_size = os.path.getsize(img_path)
         with open(img_path, "rb") as f:
-            client.put_object(MINIO_BUCKET, image_path, f, os.path.getsize(img_path), "image/png")
+            client.put_object(MINIO_BUCKET, image_path, f, image_size, "image/png")
         os.remove(img_path)
         uploaded_artifact_keys.append(image_path)
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as fv:
@@ -567,13 +826,39 @@ def process_batch(client, audio, raw_audio_path=None, raw_bucket=None):
         for f in frames:
             writer.write(f)
         writer.release()
+        video_size = os.path.getsize(video_path_tmp)
         with open(video_path_tmp, "rb") as f:
-            client.put_object(MINIO_BUCKET, video_path, f, os.path.getsize(video_path_tmp), "video/mp4")
+            client.put_object(MINIO_BUCKET, video_path, f, video_size, "video/mp4")
         os.remove(video_path_tmp)
         uploaded_artifact_keys.append(video_path)
+        processing_time_s = time.perf_counter() - t_proc_start
         row = {
-            "observation_id": obs_id,
-            "timestamp": ts,
+            "uuid": obs_id,
+            "source_id": obs_id,
+            "time_recorded": ts,
+            "processing_version": PROCESSING_VERSION,
+            "duration": audio_duration_s,
+            "spectral_centroid_hz": sc_hz,
+            "spectral_bandwidth_hz": sbw_hz,
+            "spectral_rolloff_hz": srol_hz,
+            "spectral_flatness": sflat,
+            "MFCCs": mfccs_json,
+            "spectral_entropy": spec_entropy,
+            "zero_crossing_rate": zcr,
+            "signal_energy": signal_energy,
+            "harmonic_energy_ratio": harm_ratio,
+            "symmetry_score": symmetry_score,
+            "pattern_stability_score": pattern_stability,
+            "image_resolution": image_resolution,
+            "video_resolution": video_resolution,
+            "audio_size": audio_size,
+            "image_size": image_size,
+            "video_size": video_size,
+            "processing_time(seconds)": processing_time_s,
+            "kafka_topic": KAFKA_TOPIC_HOT,
+            "device": device_name,
+            "audio_format": "wav",
+            "loudness": loudness_db(audio),
             "source": SOURCE,
             "peak_frequency_hz": dominant_freq_hz,
             "peak_time_s": peak_time,
@@ -584,8 +869,6 @@ def process_batch(client, audio, raw_audio_path=None, raw_bucket=None):
             "video_path": video_path,
             "all_peak_frequencies_hz": all_hz,
         }
-        if raw_audio_path:
-            row["raw_audio_path"] = raw_audio_path
         try:
             resp = client.get_object(MINIO_BUCKET, METADATA_KEY)
             existing = resp.read().decode("utf-8")
@@ -596,21 +879,24 @@ def process_batch(client, audio, raw_audio_path=None, raw_bucket=None):
         buf = io.StringIO()
         if existing:
             reader = csv.DictReader(io.StringIO(existing))
-            fieldnames = list(reader.fieldnames or [])
-            if "observation_id" not in fieldnames:
-                fieldnames.insert(0, "observation_id")
-            if "raw_audio_path" not in fieldnames and raw_audio_path:
-                fieldnames.append("raw_audio_path")
+            fieldnames = merge_metadata_fieldnames(reader.fieldnames, row.keys())
             rows_list = list(reader)
         else:
-            fieldnames = list(row.keys())
+            fieldnames = merge_metadata_fieldnames([], row.keys())
             rows_list = []
+        for prev in rows_list:
+            for fn in fieldnames:
+                if fn not in prev:
+                    prev[fn] = ""
         rows_list.append(row)
         writer = csv.DictWriter(buf, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows_list)
         csv_bytes = buf.getvalue().encode("utf-8")
         client.put_object(MINIO_BUCKET, METADATA_KEY, io.BytesIO(csv_bytes), len(csv_bytes), "text/csv")
+
+        # Update Parquet alongside CSV
+        update_parquet(client, MINIO_BUCKET, [row])
     except Exception as e:
         if uploaded_artifact_keys:
             _minio_remove_keys(client, MINIO_BUCKET, uploaded_artifact_keys)
@@ -643,8 +929,8 @@ def run():
         enable_auto_commit=False,
         group_id="landing-zone-hot-consumer",
     )
-    processed_raw_paths = load_processed_raw_paths(client)
-    print(f"\n🔴  Hot-path consumer: topic={KAFKA_TOPIC_HOT} → MinIO (manual commit, skip already-processed)\n")
+    processed_raw_paths = set()
+    print(f"\n🔴  Hot-path consumer: topic={KAFKA_TOPIC_HOT} → MinIO (manual commit)\n")
 
     def commit_message(msg):
         try:
@@ -674,7 +960,6 @@ def run():
                 resp.close()
                 resp.release_conn()
             except Exception as e:
-                # Already moved/deleted (e.g. already processed) → skip and commit to avoid NoSuchKey spam
                 processed_raw_paths.add(raw_path)
                 commit_message(message)
                 continue
@@ -685,7 +970,8 @@ def run():
                 audio = data.astype(np.float32).flatten()
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
-            ok = process_batch(client, audio, raw_audio_path=raw_path, raw_bucket=bucket)
+            msg_device = value.get("device", "-")
+            ok = process_batch(client, audio, raw_audio_path=raw_path, raw_bucket=bucket, device_name=msg_device)
             if ok:
                 processed_raw_paths.add(raw_path)
                 commit_message(message)
