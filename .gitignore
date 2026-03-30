@@ -7,7 +7,6 @@
 data/
 freesound_audio/
 freesound_meta/
-landing_zone/
 
 # Python cache
 __pycache__/
@@ -17,12 +16,6 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
-
-# Kafka internal files
-kafka/
-
-# MinIO internal files
-minio/
 
 # Airflow logs
 airflow/logs/
