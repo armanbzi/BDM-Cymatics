@@ -1,6 +1,7 @@
 # Environment variables - NEVER upload this
 .env
 .virtual_documents/
+.DS_Store
 
 # Downloaded datasets (too large for GitHub)
 data/
