@@ -1,13 +1,13 @@
 # Cymatics — Sound-Driven Pattern Generation & Analysis Pipeline
 
-Big Data Management project that transforms audio signals into visual cymatics patterns, extracts acoustic features, and organizes all artifacts into a structured, queryable data lakehouse.
+Big Data Management project that transforms audio files into visual cymatics patterns, extracts acoustic features, and organizes all artifacts into a structured, queryable data lakehouse.
 
 
 ## Prerequisites
 
 - **Docker** and **Docker Compose** (for MinIO, Kafka, Zookeeper, Airflow)
 - **Python 3.10+**
-- **ffmpeg** on PATH (for audio decoding in cold path)
+- **ffmpeg** (for audio decoding in cold path)
 - A microphone (for warm and hot paths)
 
 ## Quick Start
@@ -16,7 +16,7 @@ Big Data Management project that transforms audio signals into visual cymatics p
 
 ```bash
 cp env.example .env
-# Edit .env — set FREESOUND_API_KEY, MINIO credentials, Airflow credentials
+# Edit .env — set FREESOUND_API_KEY, MINIO credentials, Airflow credentials, ...
 ```
 
 ### 2. Install Python dependencies
