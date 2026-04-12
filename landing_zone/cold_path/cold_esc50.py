@@ -7,7 +7,7 @@ Landing Zone — cold-path (ESC-50).
 3. Stores audio WAV in MinIO, appends lightweight metadata rows.
 4. Deletes the temporary dataset folder after ingestion completes.
 
-Only categories matching our existing dataset are ingested:
+Only categories matching our interests are ingested:
   rain, sea_waves, thunderstorm, crickets, chirping_birds, water_drops,
   wind, church_bells, cat, dog, crow, rooster, hen, insects, frog,
   crackling_fire, pouring_water.
@@ -20,42 +20,42 @@ Run:
     python cold_esc50.py            # interactive — prompts for batch size
     python cold_esc50.py 20         # CLI — ingest 20 sounds
 
-In Jupyter, set BATCH_SIZE below to a positive integer.
 """
 
 import os
-import io
+import sys
 import csv
 import random
 import shutil
 import tempfile
 import uuid
 import zipfile
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime, timezone
 
 import requests
+
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 from dotenv import load_dotenv
 load_dotenv()
 
 import numpy as np
-from scipy.signal import find_peaks
 from scipy.io import wavfile
 
-from minio import Minio
-
-import pyarrow as pa
-import pyarrow.parquet as pq
+from shared.minio_helpers import (
+    MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_ENDPOINT,
+    MINIO_BUCKET, create_minio_client, ensure_bucket,
+    METADATA_KEY, LANDING_METADATA_FIELDS,
+    update_parquet, append_rows_to_csv, load_existing_source_ids,
+)
+from shared.freq_detection import detect_peak_freq
 
 # =============================================================================
-#  Config from env
+#  Config
 # =============================================================================
-MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
-MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "")
-MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "")
-MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
-MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "landing-zone")
-
 ESC50_BASE_PATH = os.environ.get("ESC50_BASE_PATH", "")
 
 ESC50_GITHUB_ZIP = (
@@ -63,14 +63,11 @@ ESC50_GITHUB_ZIP = (
 )
 ESC50_DEFAULT_DIR = os.path.join(tempfile.gettempdir(), "ESC-50-master")
 
-# In Jupyter set this to a positive int (e.g. 10); CLI can pass as argv.
 BATCH_SIZE = None
 
 SOURCE = "ESC-50"
-METADATA_KEY = "metadata/observations.csv"
 SAMPLE_RATE = 44100
 
-# ESC-50 categories that overlap with our dataset's sound classes
 ESC50_CATEGORIES = [
     "rain", "sea_waves", "thunderstorm", "crickets", "chirping_birds",
     "water_drops", "wind", "church_bells", "cat", "dog",
@@ -78,141 +75,8 @@ ESC50_CATEGORIES = [
     "crackling_fire", "pouring_water",
 ]
 
-METADATA_FIELDS = [
-    "uuid", "source_id", "time_recorded/added", "duration",
-    "audio_size", "audio_path", "audio_format", "source", "peak_frequency_hz",
-]
-
 COLD_EXTRA_FIELDS = ["tags", "description", "category"]
-
-# =============================================================================
-#  Parquet / Delta Lake helpers
-# =============================================================================
-PARQUET_KEY = "metadata/observations.parquet"
-
-
-def _rows_to_table(rows):
-    if not rows:
-        return None
-    all_keys = list(dict.fromkeys(k for row in rows for k in row))
-    arrays = {key: [str(row.get(key, "")) for row in rows] for key in all_keys}
-    return pa.table(arrays)
-
-
-def _read_parquet_from_minio(client, bucket, key=PARQUET_KEY):
-    try:
-        resp = client.get_object(bucket, key)
-        data = resp.read()
-        resp.close(); resp.release_conn()
-        return pq.read_table(io.BytesIO(data))
-    except Exception:
-        return None
-
-
-def _write_parquet_to_minio(client, bucket, table, key=PARQUET_KEY):
-    buf = io.BytesIO()
-    pq.write_table(table, buf)
-    buf.seek(0)
-    client.put_object(bucket, key, buf, len(buf.getvalue()), "application/octet-stream")
-
-
-def _unify_schemas(existing_table, new_table):
-    if existing_table is None:
-        return new_table
-    if new_table is None:
-        return existing_table
-    all_names = list(dict.fromkeys(
-        list(existing_table.schema.names) + list(new_table.schema.names)
-    ))
-    def pad_table(tbl, target_names):
-        for name in target_names:
-            if name not in tbl.schema.names:
-                tbl = tbl.append_column(name, pa.array([""] * tbl.num_rows, type=pa.string()))
-        return tbl.select(target_names)
-    return pa.concat_tables([pad_table(existing_table, all_names), pad_table(new_table, all_names)])
-
-
-def update_parquet(client, bucket, new_rows):
-    new_table = _rows_to_table(new_rows)
-    if new_table is None:
-        return _read_parquet_from_minio(client, bucket)
-    existing = _read_parquet_from_minio(client, bucket)
-    combined = _unify_schemas(existing, new_table)
-    _write_parquet_to_minio(client, bucket, combined)
-    print(f"  Updated: {PARQUET_KEY}  ({combined.num_rows} total rows)")
-    return combined
-
-
-# =============================================================================
-#  Peak frequency detection (harmonic selection — same as warm / hot path)
-# =============================================================================
-def harmonic_dominant_freq(window_candidates, max_harmonics=5, use_energy_weight=True):
-    candidate_counts = Counter()
-    for c in window_candidates:
-        f = c[0]
-        if f <= 0:
-            continue
-        weight = c[3] if use_energy_weight else 1
-        for div in range(1, max_harmonics + 1):
-            if f % div == 0:
-                candidate_counts[f // div] += weight
-    if not candidate_counts:
-        return 0.0
-    return float(max(candidate_counts.keys(), key=lambda k: candidate_counts[k]))
-
-
-def dominant_freq_hz_for_chunk(chunk, sample_rate=SAMPLE_RATE):
-    if len(chunk) < 64:
-        return 0.0
-    fft = np.abs(np.fft.rfft(chunk))
-    fft_norm = fft / (np.max(fft) + 1e-12)
-    pidx, _ = find_peaks(fft_norm, height=0.06, distance=6, prominence=0.04)
-    if len(pidx) == 0:
-        pidx = np.array([np.argmax(fft_norm)])
-    top_idx = pidx[np.argmax(fft_norm[pidx])]
-    return float(top_idx * sample_rate / len(chunk))
-
-
-def detect_peak_freq(audio, sample_rate=SAMPLE_RATE):
-    """Sliding 0.25s windows + harmonic voting (max_harmonics=4), matching warm path."""
-    audio = np.asarray(audio, dtype=np.float64).flatten()
-    if len(audio) < 64:
-        return 0.0
-    window_len = int(sample_rate * 0.25)
-    hop = max(1, window_len // 2)
-    window_candidates = []
-    if len(audio) > window_len:
-        for off in range(0, len(audio) - window_len, hop):
-            chunk = audio[off : off + window_len]
-            hz = dominant_freq_hz_for_chunk(chunk, sample_rate)
-            freq_bin = int(round(hz))
-            energy = float(np.sum(np.abs(np.fft.rfft(chunk)) ** 2))
-            window_candidates.append((freq_bin, chunk.copy(), off, energy, hz))
-    else:
-        hz = dominant_freq_hz_for_chunk(audio, sample_rate)
-        freq_bin = int(round(hz))
-        energy = float(np.sum(np.abs(np.fft.rfft(audio)) ** 2))
-        window_candidates.append((freq_bin, audio.copy(), 0, energy, hz))
-    if not window_candidates:
-        return 0.0
-    return harmonic_dominant_freq(window_candidates, max_harmonics=4, use_energy_weight=True)
-
-
-# =============================================================================
-#  CSV helpers
-# =============================================================================
-def merge_metadata_fieldnames(existing_names, row_keys):
-    out = list(existing_names or [])
-    seen = set(out)
-    for k in METADATA_FIELDS + COLD_EXTRA_FIELDS:
-        if k not in seen:
-            seen.add(k)
-            out.append(k)
-    for k in row_keys:
-        if k not in seen:
-            seen.add(k)
-            out.append(k)
-    return out
+PRIORITY_FIELDS = LANDING_METADATA_FIELDS + COLD_EXTRA_FIELDS
 
 
 # =============================================================================
@@ -258,45 +122,6 @@ def download_esc50_if_needed():
         )
     print(f"  ESC-50 ready at {ESC50_DEFAULT_DIR}")
     return ESC50_DEFAULT_DIR
-
-
-# =============================================================================
-#  MinIO helpers
-# =============================================================================
-def ensure_minio_structure(client):
-    if not client.bucket_exists(MINIO_BUCKET):
-        client.make_bucket(MINIO_BUCKET)
-        print(f"  Created bucket: {MINIO_BUCKET}")
-    placeholders = [
-        "metadata/.keep",
-        f"audio/{SOURCE}/.keep",
-    ]
-    for key in placeholders:
-        try:
-            client.stat_object(MINIO_BUCKET, key)
-        except Exception:
-            client.put_object(MINIO_BUCKET, key, io.BytesIO(b""), 0)
-    print("  Bucket and folder structure ready.")
-
-
-# =============================================================================
-#  Deduplication
-# =============================================================================
-def load_existing_source_ids(client):
-    """Return set of source_id values already stored in the metadata CSV."""
-    try:
-        resp = client.get_object(MINIO_BUCKET, METADATA_KEY)
-        data = resp.read().decode("utf-8")
-        resp.close(); resp.release_conn()
-    except Exception:
-        return set()
-    reader = csv.DictReader(io.StringIO(data))
-    ids = set()
-    for row in reader:
-        val = row.get("source_id", "").strip()
-        if val:
-            ids.add(val)
-    return ids
 
 
 # =============================================================================
@@ -353,8 +178,7 @@ def process_record(client, audio_np, esc_row):
 #  Category-diverse batch selection
 # =============================================================================
 def select_diverse_batch(candidates, batch_size):
-    """Pick up to *batch_size* records, cycling through categories so each
-    consecutive record comes from a different category."""
+    """Pick up to *batch_size* records, cycling through categories."""
     by_cat = defaultdict(list)
     for r in candidates:
         by_cat[r["category"]].append(r)
@@ -391,7 +215,6 @@ def run(batch_size=10):
             "Set MINIO_ACCESS_KEY and MINIO_SECRET_KEY in your .env file."
         )
 
-    # --- Step 1: Download dataset if needed ---
     print("\n[1/3] Resolving ESC-50 dataset location...")
     esc50_root = download_esc50_if_needed()
     is_temp = esc50_root == ESC50_DEFAULT_DIR
@@ -402,16 +225,10 @@ def run(batch_size=10):
     if not os.path.isdir(audio_dir):
         raise RuntimeError(f"ESC-50 audio directory not found at {audio_dir}")
 
-    # --- Step 2: Connect to MinIO ---
     print("\n[2/3] Connecting to MinIO...")
     try:
-        client = Minio(
-            MINIO_ENDPOINT,
-            access_key=MINIO_ACCESS_KEY,
-            secret_key=MINIO_SECRET_KEY,
-            secure=MINIO_SECURE,
-        )
-        ensure_minio_structure(client)
+        client = create_minio_client()
+        ensure_bucket(client, MINIO_BUCKET, ["metadata/.keep", f"audio/{SOURCE}/.keep"])
     except Exception as e:
         raise RuntimeError(
             f"Cannot connect to MinIO at {MINIO_ENDPOINT}. "
@@ -427,9 +244,8 @@ def run(batch_size=10):
     eligible = [r for r in all_records if r["category"] in allowed]
     print(f"  ESC-50: {len(all_records)} total records, {len(eligible)} in our categories.")
 
-    # --- Select batch with category diversity ---
     print(f"\n[3/3] Selecting diverse batch of up to {batch_size} records...")
-    existing_ids = load_existing_source_ids(client)
+    existing_ids = load_existing_source_ids(client, MINIO_BUCKET)
     if existing_ids:
         print(f"  Found {len(existing_ids)} existing records — duplicates will be skipped.")
 
@@ -448,7 +264,6 @@ def run(batch_size=10):
     for cat, cnt in sorted(cats_in_batch.items()):
         print(f"    {cat}: {cnt}")
 
-    # --- Process batch (audio upload + metadata) ---
     print(f"\n  Processing batch of {len(batch)} records...\n")
     rows = []
     for i, esc_row in enumerate(batch):
@@ -484,42 +299,13 @@ def run(batch_size=10):
         print("\n  No records processed.")
         return
 
-    # Append to shared CSV
-    try:
-        resp = client.get_object(MINIO_BUCKET, METADATA_KEY)
-        existing = resp.read().decode("utf-8")
-        resp.close(); resp.release_conn()
-    except Exception:
-        existing = None
-
-    buf = io.StringIO()
-    if existing:
-        reader = csv.DictReader(io.StringIO(existing))
-        fieldnames = merge_metadata_fieldnames(reader.fieldnames, rows[0].keys())
-        rows_list = list(reader)
-    else:
-        fieldnames = merge_metadata_fieldnames([], rows[0].keys())
-        rows_list = []
-
-    for prev in rows_list:
-        for fn in fieldnames:
-            if fn not in prev:
-                prev[fn] = ""
-
-    rows_list.extend(rows)
-    writer = csv.DictWriter(buf, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(rows_list)
-    csv_bytes = buf.getvalue().encode("utf-8")
-    client.put_object(MINIO_BUCKET, METADATA_KEY, io.BytesIO(csv_bytes), len(csv_bytes), "text/csv")
-
+    append_rows_to_csv(client, MINIO_BUCKET, rows, PRIORITY_FIELDS)
     update_parquet(client, MINIO_BUCKET, rows)
 
-    print(f"\n  Cold-path ESC-50 ingestion complete.")
+    print("\n  Cold-path ESC-50 ingestion complete.")
     print(f"   Batch: {len(rows)} records across {len(set(r['category'] for r in rows))} categories.")
     print(f"   Metadata: {METADATA_KEY}")
 
-    # Cleanup: remove temp dataset folder if it was auto-downloaded
     if is_temp and os.path.isdir(esc50_root):
         print(f"\n  Cleaning up temporary dataset at {esc50_root}...")
         shutil.rmtree(esc50_root, ignore_errors=True)
@@ -529,7 +315,6 @@ def run(batch_size=10):
 
 
 def _resolve_batch_size():
-    import sys
     if BATCH_SIZE is not None:
         try:
             n = int(BATCH_SIZE)

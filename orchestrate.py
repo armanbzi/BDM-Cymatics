@@ -10,6 +10,7 @@ Interactive CLI that lets you choose which flow to run:
   4. Cold path: ESC-50     (batch ESC-50 ingestion)
   5. Trusted zone       (enrich all landing-zone audios)
   6. Sync Delta Lake    (Parquet → Delta Lake)
+  7. SonarQube analysis (code quality scan + results)
 
 While a flow is running, live CPU / RAM / disk metrics are displayed
 every 2 seconds so you can monitor resource usage in real time.
@@ -22,6 +23,10 @@ import signal
 import subprocess
 import threading
 import tempfile
+import json
+import urllib.request
+import urllib.error
+import shutil
 
 try:
     import psutil
@@ -32,6 +37,12 @@ except ImportError:
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 PAUSE_MONITOR_FILE = os.path.join(tempfile.gettempdir(), ".cymatics_pause_monitor")
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+except ImportError:
+    pass
 
 FLOWS = {
     "1": {
@@ -132,9 +143,20 @@ def _monitor_resources(pids, interval=2.0):
 
 # ── subprocess helpers ──────────────────────────────────────────────────────
 
+_ALLOWED_SCRIPTS = frozenset(
+    script
+    for flow in FLOWS.values()
+    for script in flow["scripts"]
+)
+
+
 def _run_script(script_path, extra_args=None):
     """Launch a Python script as a subprocess, return the Popen object."""
-    cmd = [sys.executable, script_path] + (extra_args or [])
+    resolved = os.path.abspath(script_path)
+    if resolved not in _ALLOWED_SCRIPTS:
+        raise ValueError(f"Refusing to run untrusted script: {script_path}")
+    safe_args = [str(a) for a in (extra_args or [])]
+    cmd = [sys.executable, resolved] + safe_args
     return subprocess.Popen(
         cmd,
         cwd=PROJECT_ROOT,
@@ -180,6 +202,197 @@ def _wait_all(procs, parallel=False):
     return results
 
 
+# ── SonarQube analysis ─────────────────────────────────────────────────────
+
+SONAR_URL = "http://localhost:9090"
+SONAR_PROJECT_KEY = "bdm-cymatics"
+
+
+def _sonar_credentials():
+    """Return (mode, value) for API/scanner auth: ('token', str) or ('basic', (user, pass)) or (None, None)."""
+    token = (os.environ.get("SONAR_TOKEN") or "").strip()
+    if token:
+        return "token", token
+    user = (os.environ.get("SONAR_USERNAME") or os.environ.get("SONAR_LOGIN") or "").strip()
+    password = (os.environ.get("SONAR_PASSWORD") or "").strip()
+    if user and password:
+        return "basic", (user, password)
+    return None, None
+
+
+def _sonar_auth_header():
+    import base64
+    mode, val = _sonar_credentials()
+    if mode == "token":
+        cred = base64.b64encode(f"{val}:".encode()).decode()
+        return f"Basic {cred}"
+    if mode == "basic":
+        u, p = val
+        cred = base64.b64encode(f"{u}:{p}".encode()).decode()
+        return f"Basic {cred}"
+    return None
+
+
+def _sonar_api(path):
+    """GET a SonarQube API endpoint, return parsed JSON."""
+    url = f"{SONAR_URL}{path}"
+    req = urllib.request.Request(url)
+    auth = _sonar_auth_header()
+    if auth:
+        req.add_header("Authorization", auth)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _check_sonar_ready():
+    """Return True if SonarQube server is up and ready."""
+    try:
+        data = _sonar_api("/api/system/status")
+        return data.get("status") == "UP"
+    except Exception:
+        return False
+
+
+def _find_sonar_scanner():
+    """Locate sonar-scanner binary. Return path or None."""
+    scanner = shutil.which("sonar-scanner")
+    if scanner:
+        return scanner
+    local = os.path.join(PROJECT_ROOT, "sonar-scanner", "bin", "sonar-scanner")
+    if os.path.isfile(local):
+        return local
+    return None
+
+
+def run_sonarqube():
+    """Run SonarQube analysis and display results."""
+    print(f"\n{'─' * 62}")
+    print("  SonarQube Code Quality Analysis")
+    print(f"{'─' * 62}\n")
+
+    print("  Checking SonarQube server...")
+    if not _check_sonar_ready():
+        print("  SonarQube is not running or not ready.")
+        print("  Start it with:  docker compose up -d sonarqube")
+        print("  First startup takes ~90 seconds. UI: http://localhost:9090")
+        print(f"{'─' * 62}\n")
+        return
+
+    print("  SonarQube server is UP.\n")
+
+    scanner = _find_sonar_scanner()
+    if not scanner:
+        print("  sonar-scanner not found on PATH.")
+        print("  Install it:  brew install sonar-scanner")
+        print("         or:   https://docs.sonarqube.org/latest/analyzing-source-code/scanners/sonarscanner/")
+        print(f"\n{'─' * 62}\n")
+        return
+
+    print(f"  Scanner: {scanner}")
+    mode, val = _sonar_credentials()
+    if mode == "token":
+        print("  Auth: user token (from SONAR_TOKEN)")
+    elif mode == "basic":
+        u, _pw = val
+        print(f"  Auth: password login (SONAR_USERNAME={u!r})")
+    else:
+        print("  Auth: none — set SONAR_TOKEN or SONAR_USERNAME + SONAR_PASSWORD in .env")
+    print("  Running analysis...\n")
+
+    cmd = [scanner]
+    if mode == "token":
+        cmd.append(f"-Dsonar.token={val}")
+    elif mode == "basic":
+        u, p = val
+        cmd.append(f"-Dsonar.login={u}")
+        cmd.append(f"-Dsonar.password={p}")
+    else:
+        print("  Hint: set SONAR_TOKEN or SONAR_USERNAME + SONAR_PASSWORD in .env")
+        print("        if analysis fails with “not authorized”.\n")
+
+    proc = subprocess.run(
+        cmd,
+        cwd=PROJECT_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    for line in proc.stdout.splitlines():
+        stripped = line.strip()
+        if any(k in stripped.upper() for k in ["ERROR", "WARN", "INFO"]):
+            print(f"    {stripped}")
+
+    if proc.returncode != 0:
+        print(f"\n  Scanner exited with code {proc.returncode}.")
+        print(f"{'─' * 62}\n")
+        return
+
+    print("\n  Waiting for analysis report to be processed...")
+    for _ in range(30):
+        time.sleep(2)
+        try:
+            task_data = _sonar_api(
+                f"/api/ce/component?component={SONAR_PROJECT_KEY}"
+            )
+            queue = task_data.get("queue", [])
+            if not queue:
+                break
+        except Exception:
+            pass
+
+    print("  Fetching results...\n")
+
+    try:
+        measures = _sonar_api(
+            f"/api/measures/component?component={SONAR_PROJECT_KEY}"
+            "&metricKeys=bugs,vulnerabilities,code_smells,coverage,"
+            "duplicated_lines_density,ncloc,sqale_rating,reliability_rating,"
+            "security_rating,sqale_index"
+        )
+    except urllib.error.HTTPError as e:
+        print(f"  Could not fetch results: {e}")
+        print(f"  Check the dashboard at {SONAR_URL}/dashboard?id={SONAR_PROJECT_KEY}")
+        print(f"{'─' * 62}\n")
+        return
+
+    metrics = {}
+    for m in measures.get("component", {}).get("measures", []):
+        metrics[m["metric"]] = m["value"]
+
+    rating_map = {"1.0": "A", "2.0": "B", "3.0": "C", "4.0": "D", "5.0": "E"}
+
+    print("  ┌─ SonarQube Results " + "─" * 41)
+    print(f"  │  Project:        {SONAR_PROJECT_KEY}")
+    print(f"  │  Lines of Code:  {metrics.get('ncloc', '—')}")
+    print("  │")
+    print(f"  │  Bugs:                {metrics.get('bugs', '—')}")
+    print(f"  │  Vulnerabilities:     {metrics.get('vulnerabilities', '—')}")
+    print(f"  │  Code Smells:         {metrics.get('code_smells', '—')}")
+    debt_min = int(float(metrics.get("sqale_index", 0)))
+    if debt_min >= 60:
+        debt_str = f"{debt_min // 60}h {debt_min % 60}min"
+    else:
+        debt_str = f"{debt_min}min"
+    print(f"  │  Technical Debt:      {debt_str}")
+    print("  │")
+    dup = metrics.get("duplicated_lines_density", "—")
+    if dup != "—":
+        dup = f"{float(dup):.1f}%"
+    print(f"  │  Duplication:         {dup}")
+    cov = metrics.get("coverage", "—")
+    if cov != "—":
+        cov = f"{float(cov):.1f}%"
+    print(f"  │  Coverage:            {cov}")
+    print("  │")
+    print(f"  │  Maintainability:     {rating_map.get(metrics.get('sqale_rating', ''), '—')}")
+    print(f"  │  Reliability:         {rating_map.get(metrics.get('reliability_rating', ''), '—')}")
+    print(f"  │  Security:            {rating_map.get(metrics.get('security_rating', ''), '—')}")
+    print("  └" + "─" * 62)
+    print(f"\n  Full dashboard: {SONAR_URL}/dashboard?id={SONAR_PROJECT_KEY}")
+    print(f"{'─' * 62}\n")
+
+
 # ── main menu ───────────────────────────────────────────────────────────────
 
 def print_banner():
@@ -191,6 +404,7 @@ def print_banner():
         flow = FLOWS[key]
         tag = " (parallel)" if flow.get("parallel") else ""
         print(f"   [{key}]  {flow['name']}{tag}")
+    print("   [7]  SonarQube code analysis")
     print()
     print("   [q]  Quit")
     print()
@@ -274,7 +488,7 @@ def main():
     while True:
         print_banner()
         try:
-            choice = input("  Select flow [1-6, q]: ").strip().lower()
+            choice = input("  Select flow [1-7, q]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("\n  Bye!")
             break
@@ -282,6 +496,9 @@ def main():
         if choice == "q":
             print("  Bye!")
             break
+        if choice == "7":
+            run_sonarqube()
+            continue
         if choice not in FLOWS:
             print("  Invalid choice. Try again.")
             continue

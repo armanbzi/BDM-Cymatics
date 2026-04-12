@@ -73,7 +73,7 @@ def _ingest_freesound(**context):
         log.info("  Loaded .env from %s (override=False, docker-compose env takes priority)", dotenv_path)
 
     log.info("  MINIO_ENDPOINT   : %s", os.environ.get("MINIO_ENDPOINT", "(not set)"))
-    log.info("  FREESOUND_API_KEY: %s", "***" if os.environ.get("FREESOUND_API_KEY") else "(not set)")
+    log.info("  FREESOUND_API_KEY: %s", "(set)" if os.environ.get("FREESOUND_API_KEY") else "(not set)")
 
     import cold_freesound
 
@@ -109,23 +109,8 @@ with DAG(
         provide_context=True,
     )
 
-    # ── current pipeline ────────────────────────────────────────────────
-    ingest
-
-    # ── future extensions (uncomment & implement when ready) ────────────
-    # validate_metadata = PythonOperator(
-    #     task_id="validate_metadata",
-    #     python_callable=_validate_metadata,   # schema + quality checks
-    # )
-    #
-    # store_to_trusted_zone = PythonOperator(
-    #     task_id="store_to_trusted_zone",
-    #     python_callable=_store_to_trusted_zone,  # trigger trusted-zone enrichment
-    # )
-    #
-    # trigger_ml_pipeline = PythonOperator(
-    #     task_id="trigger_ml_pipeline",
-    #     python_callable=_trigger_ml_pipeline,  # kick off ML training / inference
-    # )
-    #
-    # ingest >> validate_metadata >> store_to_trusted_zone >> trigger_ml_pipeline
+    # ── future extensions ────────────
+    # validate_metadata 
+    # store_to_trusted_zone 
+    # ...
+    

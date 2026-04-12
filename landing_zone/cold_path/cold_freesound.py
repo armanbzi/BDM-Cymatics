@@ -16,46 +16,43 @@ Run:
 """
 
 import os
+import sys
 import io
-import csv
-import json
 import subprocess
 import tempfile
 import random
 import time
 import uuid
-from collections import Counter
 from datetime import datetime, timezone
 
 import requests
+
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 from dotenv import load_dotenv
 load_dotenv()
 
 import numpy as np
-from scipy.signal import find_peaks
 from scipy.io import wavfile
 
-from minio import Minio
-
-import pyarrow as pa
-import pyarrow.parquet as pq
+from shared.minio_helpers import (
+    MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_SECURE,
+    MINIO_BUCKET, create_minio_client, ensure_bucket,
+    METADATA_KEY, LANDING_METADATA_FIELDS,
+    update_parquet, append_rows_to_csv, load_existing_source_ids,
+)
+from shared.freq_detection import detect_peak_freq
 
 # =============================================================================
-#  Config from env
+#  Config
 # =============================================================================
-MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
-MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "")
-MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "")
-MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
-MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "landing-zone")
-
 FREESOUND_API_KEY = os.environ.get("FREESOUND_API_KEY", "")
 
-# In Jupyter set this to a positive int (e.g. 10); CLI can pass as argv.
 BATCH_SIZE = None
 
 SOURCE = "Freesound"
-METADATA_KEY = "metadata/observations.csv"
 SAMPLE_RATE = 44100
 
 QUERIES = [
@@ -66,142 +63,93 @@ QUERIES = [
     "waterfall", "ocean", "forest",
 ]
 
-METADATA_FIELDS = [
-    "uuid", "source_id", "time_recorded/added", "duration",
-    "audio_size", "audio_path", "audio_format", "source", "peak_frequency_hz",
-]
-
 COLD_EXTRA_FIELDS = ["tags", "description", "category"]
+PRIORITY_FIELDS = LANDING_METADATA_FIELDS + COLD_EXTRA_FIELDS
+
+# HTTP tuning (Freesound can be slow; defaults are generous)
+_FS_CONNECT = float(os.environ.get("FREESOUND_CONNECT_TIMEOUT", "20"))
+_FS_READ_SEARCH = float(os.environ.get("FREESOUND_READ_TIMEOUT", "120"))
+_FS_READ_DOWNLOAD = float(os.environ.get("FREESOUND_DOWNLOAD_TIMEOUT", "300"))
+_FS_MAX_RETRIES = int(os.environ.get("FREESOUND_MAX_RETRIES", "5"))
+# Transient HTTP statuses (empty body on 504 is common behind proxies)
+_RETRY_HTTP = frozenset({429, 502, 503, 504})
 
 
 # =============================================================================
-#  Parquet helpers
+#  Freesound HTTP (retries: timeouts, connection errors, gateway/rate-limit)
 # =============================================================================
-PARQUET_KEY = "metadata/observations.parquet"
-
-
-def _rows_to_table(rows):
-    if not rows:
-        return None
-    all_keys = list(dict.fromkeys(k for row in rows for k in row))
-    arrays = {key: [str(row.get(key, "")) for row in rows] for key in all_keys}
-    return pa.table(arrays)
-
-
-def _read_parquet_from_minio(client, bucket, key=PARQUET_KEY):
-    try:
-        resp = client.get_object(bucket, key)
-        data = resp.read()
-        resp.close(); resp.release_conn()
-        return pq.read_table(io.BytesIO(data))
-    except Exception:
-        return None
-
-
-def _write_parquet_to_minio(client, bucket, table, key=PARQUET_KEY):
-    buf = io.BytesIO()
-    pq.write_table(table, buf)
-    buf.seek(0)
-    client.put_object(bucket, key, buf, len(buf.getvalue()), "application/octet-stream")
-
-
-def _unify_schemas(existing_table, new_table):
-    if existing_table is None:
-        return new_table
-    if new_table is None:
-        return existing_table
-    all_names = list(dict.fromkeys(
-        list(existing_table.schema.names) + list(new_table.schema.names)
-    ))
-    def pad_table(tbl, target_names):
-        for name in target_names:
-            if name not in tbl.schema.names:
-                tbl = tbl.append_column(name, pa.array([""] * tbl.num_rows, type=pa.string()))
-        return tbl.select(target_names)
-    return pa.concat_tables([pad_table(existing_table, all_names), pad_table(new_table, all_names)])
-
-
-def update_parquet(client, bucket, new_rows):
-    new_table = _rows_to_table(new_rows)
-    if new_table is None:
-        return _read_parquet_from_minio(client, bucket)
-    existing = _read_parquet_from_minio(client, bucket)
-    combined = _unify_schemas(existing, new_table)
-    _write_parquet_to_minio(client, bucket, combined)
-    print(f"  Updated: {PARQUET_KEY}  ({combined.num_rows} total rows)")
-    return combined
-
-
-# =============================================================================
-#  Peak-frequency detection (harmonic selection — same as warm / hot path)
-# =============================================================================
-def harmonic_dominant_freq(window_candidates, max_harmonics=5, use_energy_weight=True):
-    candidate_counts = Counter()
-    for c in window_candidates:
-        f = c[0]
-        if f <= 0:
+def _freesound_get(url, *, params=None, timeout, label="Freesound",
+                   allow_redirects=True):
+    """GET with retries on timeouts, connection errors, and transient HTTP codes."""
+    last_resp = None
+    last_exc = None
+    for attempt in range(1, _FS_MAX_RETRIES + 1):
+        try:
+            resp = requests.get(
+                url, params=params, timeout=timeout,
+                allow_redirects=allow_redirects,
+            )
+        except (
+            requests.exceptions.ReadTimeout,
+            requests.exceptions.ConnectTimeout,
+            requests.exceptions.ConnectionError,
+        ) as e:
+            last_exc = e
+            if attempt >= _FS_MAX_RETRIES:
+                break
+            wait = min(2 ** attempt, 60)
+            print(f"  {label}: network error ({e.__class__.__name__}), "
+                  f"attempt {attempt}/{_FS_MAX_RETRIES} — retrying in {wait}s...")
+            time.sleep(wait)
             continue
-        weight = c[3] if use_energy_weight else 1
-        for div in range(1, max_harmonics + 1):
-            if f % div == 0:
-                candidate_counts[f // div] += weight
-    if not candidate_counts:
-        return 0.0
-    return float(max(candidate_counts.keys(), key=lambda k: candidate_counts[k]))
+
+        if resp.status_code in _RETRY_HTTP:
+            last_resp = resp
+            try:
+                resp.content  # drain body so the connection can be reused
+            except Exception:
+                pass
+            if attempt >= _FS_MAX_RETRIES:
+                return resp
+            wait = min(2 ** attempt, 60)
+            if resp.status_code == 429:
+                wait = max(wait, 30)
+            print(f"  {label}: HTTP {resp.status_code} — retrying in {wait}s "
+                  f"(attempt {attempt}/{_FS_MAX_RETRIES})...")
+            time.sleep(wait)
+            continue
+
+        return resp
+
+    if last_resp is not None:
+        return last_resp
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"{label}: request failed after {_FS_MAX_RETRIES} attempts")
 
 
-def dominant_freq_hz_for_chunk(chunk, sample_rate=SAMPLE_RATE):
-    if len(chunk) < 64:
-        return 0.0
-    fft = np.abs(np.fft.rfft(chunk))
-    fft_norm = fft / (np.max(fft) + 1e-12)
-    pidx, _ = find_peaks(fft_norm, height=0.06, distance=6, prominence=0.04)
-    if len(pidx) == 0:
-        pidx = np.array([np.argmax(fft_norm)])
-    top_idx = pidx[np.argmax(fft_norm[pidx])]
-    return float(top_idx * sample_rate / len(chunk))
-
-
-def detect_peak_freq(audio, sample_rate=SAMPLE_RATE):
-    """Sliding 0.25s windows + harmonic voting (max_harmonics=4), matching warm path."""
-    audio = np.asarray(audio, dtype=np.float64).flatten()
-    if len(audio) < 64:
-        return 0.0
-    window_len = int(sample_rate * 0.25)
-    hop = max(1, window_len // 2)
-    window_candidates = []
-    if len(audio) > window_len:
-        for off in range(0, len(audio) - window_len, hop):
-            chunk = audio[off : off + window_len]
-            hz = dominant_freq_hz_for_chunk(chunk, sample_rate)
-            freq_bin = int(round(hz))
-            energy = float(np.sum(np.abs(np.fft.rfft(chunk)) ** 2))
-            window_candidates.append((freq_bin, chunk.copy(), off, energy, hz))
-    else:
-        hz = dominant_freq_hz_for_chunk(audio, sample_rate)
-        freq_bin = int(round(hz))
-        energy = float(np.sum(np.abs(np.fft.rfft(audio)) ** 2))
-        window_candidates.append((freq_bin, audio.copy(), 0, energy, hz))
-    if not window_candidates:
-        return 0.0
-    return harmonic_dominant_freq(window_candidates, max_harmonics=4, use_energy_weight=True)
-
-
-# =============================================================================
-#  CSV helpers
-# =============================================================================
-def merge_metadata_fieldnames(existing_names, row_keys):
-    out = list(existing_names or [])
-    seen = set(out)
-    for k in METADATA_FIELDS + COLD_EXTRA_FIELDS:
-        if k not in seen:
-            seen.add(k)
-            out.append(k)
-    for k in row_keys:
-        if k not in seen:
-            seen.add(k)
-            out.append(k)
-    return out
+def _parse_freesound_response(resp):
+    """Parse JSON; raise RuntimeError on HTTP error or empty/non-JSON body."""
+    try:
+        data = resp.json()
+    except (ValueError, requests.exceptions.JSONDecodeError) as e:
+        preview = (resp.text or "").strip()[:300] or "(empty body)"
+        sc = resp.status_code
+        if sc in _RETRY_HTTP or sc >= 500:
+            raise RuntimeError(
+                f"Freesound gateway/server error (HTTP {sc}); body not JSON: {preview}. "
+                "The service may be overloaded — try again later, or raise "
+                "FREESOUND_MAX_RETRIES / FREESOUND_READ_TIMEOUT."
+            ) from e
+        raise RuntimeError(
+            f"Freesound API returned non-JSON (HTTP {sc}): {preview}"
+        ) from e
+    if not resp.ok:
+        detail = data.get("detail", data)
+        raise RuntimeError(
+            f"Freesound API error (HTTP {resp.status_code}): {detail}"
+        )
+    return data
 
 
 # =============================================================================
@@ -215,10 +163,7 @@ FREESOUND_SEARCH_FIELDS = (
 
 
 def search_freesound(query, page_size=15, page=1, created_after=None):
-    """Return list of sound dicts for ≤10 s sounds matching *query*.
-    If *created_after* is given (ISO-8601 date string, e.g. '2025-01-01'),
-    only sounds created after that date are returned.
-    """
+    """Return list of sound dicts for ≤10 s sounds matching *query*."""
     url = "https://freesound.org/apiv2/search/text/"
     duration_filter = "duration:[1 TO 10]"
     if created_after:
@@ -231,17 +176,24 @@ def search_freesound(query, page_size=15, page=1, created_after=None):
         "page": page,
         "filter": duration_filter,
     }
-    resp = requests.get(url, params=params, timeout=30)
-    data = resp.json()
+    t = (_FS_CONNECT, _FS_READ_SEARCH)
+    resp = _freesound_get(url, params=params, timeout=t, label="Search")
+    data = _parse_freesound_response(resp)
     return data.get("results", [])
 
 
 def download_sound_bytes(sound):
     """Download original audio; fall back to high-quality preview."""
+    dl_timeout = (_FS_CONNECT, _FS_READ_DOWNLOAD)
     dl_url = sound.get("download")
     if dl_url:
-        r = requests.get(dl_url, params={"token": FREESOUND_API_KEY}, timeout=60,
-                         allow_redirects=True)
+        r = _freesound_get(
+            dl_url,
+            params={"token": FREESOUND_API_KEY},
+            timeout=dl_timeout,
+            label="Download",
+            allow_redirects=True,
+        )
         if r.status_code == 200 and len(r.content) > 100:
             ext = sound.get("type", "wav")
             return r.content, ext
@@ -249,14 +201,20 @@ def download_sound_bytes(sound):
     for key in ("preview-hq-mp3", "preview-lq-mp3"):
         url = previews.get(key)
         if url:
-            r = requests.get(url, timeout=60)
+            r = _freesound_get(url, params=None, timeout=dl_timeout, label="Preview")
             if r.status_code == 200 and len(r.content) > 100:
                 return r.content, "mp3"
     return None, None
 
 
+_ALLOWED_EXTENSIONS = frozenset({"wav", "mp3", "ogg", "flac", "aiff", "aac", "m4a"})
+
+
 def decode_to_numpy(audio_bytes, ext="wav"):
     """Decode audio bytes to mono float64 at SAMPLE_RATE via ffmpeg."""
+    ext = ext.lower().strip(".")
+    if ext not in _ALLOWED_EXTENSIONS:
+        raise ValueError(f"Unsupported audio extension: {ext}")
     with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as f:
         f.write(audio_bytes)
         src = f.name
@@ -278,25 +236,9 @@ def decode_to_numpy(audio_bytes, ext="wav"):
 
 
 # =============================================================================
-#  MinIO helpers
+#  MinIO helpers (Freesound-specific)
 # =============================================================================
 LAST_INGESTION_KEY = "metadata/freesound_last_ingestion.txt"
-
-
-def ensure_minio_structure(client):
-    if not client.bucket_exists(MINIO_BUCKET):
-        client.make_bucket(MINIO_BUCKET)
-        print(f"  Created bucket: {MINIO_BUCKET}")
-    placeholders = [
-        "metadata/.keep",
-        f"audio/{SOURCE}/.keep",
-    ]
-    for key in placeholders:
-        try:
-            client.stat_object(MINIO_BUCKET, key)
-        except Exception:
-            client.put_object(MINIO_BUCKET, key, io.BytesIO(b""), 0)
-    print("  Bucket and folder structure ready.")
 
 
 def read_last_ingestion_time(client):
@@ -372,39 +314,10 @@ def process_sound(client, sound, audio_np, query):
 
 
 # =============================================================================
-#  Deduplication: load existing source_id values from CSV in MinIO
-# =============================================================================
-def load_existing_source_ids(client):
-    """Return set of source_id strings already stored in the metadata CSV."""
-    try:
-        resp = client.get_object(MINIO_BUCKET, METADATA_KEY)
-        data = resp.read().decode("utf-8")
-        resp.close(); resp.release_conn()
-    except Exception:
-        return set()
-    reader = csv.DictReader(io.StringIO(data))
-    ids = set()
-    for row in reader:
-        sid = row.get("source_id", "").strip()
-        if sid:
-            ids.add(sid)
-    return ids
-
-
-# =============================================================================
 #  Main
 # =============================================================================
 def run(batch_size=10, created_after=None, update_checkpoint=False):
-    """Run cold-path Freesound ingestion.
-
-    Args:
-        batch_size: max number of sounds to ingest.
-        created_after: ISO date string (e.g. '2025-01-01') — only fetch sounds
-            created after this date.  If *None* and *update_checkpoint* is True,
-            the last-ingestion timestamp stored in MinIO is used automatically.
-        update_checkpoint: if True, persist current UTC time as the new
-            last-ingestion timestamp in MinIO after a successful run.
-    """
+    """Run cold-path Freesound ingestion."""
     if not FREESOUND_API_KEY:
         raise RuntimeError(
             "Freesound API key not found. "
@@ -418,13 +331,8 @@ def run(batch_size=10, created_after=None, update_checkpoint=False):
         )
 
     try:
-        client = Minio(
-            MINIO_ENDPOINT,
-            access_key=MINIO_ACCESS_KEY,
-            secret_key=MINIO_SECRET_KEY,
-            secure=MINIO_SECURE,
-        )
-        ensure_minio_structure(client)
+        client = create_minio_client()
+        ensure_bucket(client, MINIO_BUCKET, ["metadata/.keep", f"audio/{SOURCE}/.keep"])
     except Exception as e:
         raise RuntimeError(
             f"Cannot connect to MinIO at {MINIO_ENDPOINT}. "
@@ -439,20 +347,19 @@ def run(batch_size=10, created_after=None, update_checkpoint=False):
 
     run_start_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    existing_ids = load_existing_source_ids(client)
+    existing_ids = load_existing_source_ids(client, MINIO_BUCKET)
     if existing_ids:
         print(f"  Found {len(existing_ids)} existing records in metadata — duplicates will be skipped.")
 
     try:
-        probe = search_freesound(QUERIES[0], page_size=1, page=1, created_after=created_after)
-        if isinstance(probe, dict) and "detail" in probe:
-            raise RuntimeError(
-                f"Freesound API rejected the request: {probe['detail']}. "
-                "Check that FREESOUND_API_KEY is valid."
-            )
+        search_freesound(QUERIES[0], page_size=1, page=1, created_after=created_after)
+    except RuntimeError:
+        raise
     except requests.exceptions.RequestException as e:
         raise RuntimeError(
-            f"Cannot reach Freesound API (network error): {e}"
+            f"Cannot reach Freesound API after {_FS_MAX_RETRIES} attempts: {e}\n"
+            "  Check your network or try again later. Optional env: "
+            "FREESOUND_CONNECT_TIMEOUT, FREESOUND_READ_TIMEOUT, FREESOUND_MAX_RETRIES."
         ) from e
 
     collected = []
@@ -537,48 +444,20 @@ def run(batch_size=10, created_after=None, update_checkpoint=False):
             write_last_ingestion_time(client, run_start_ts)
         return
 
-    try:
-        resp = client.get_object(MINIO_BUCKET, METADATA_KEY)
-        existing = resp.read().decode("utf-8")
-        resp.close(); resp.release_conn()
-    except Exception:
-        existing = None
-
-    buf = io.StringIO()
-    if existing:
-        reader = csv.DictReader(io.StringIO(existing))
-        fieldnames = merge_metadata_fieldnames(reader.fieldnames, rows[0].keys())
-        rows_list = list(reader)
-    else:
-        fieldnames = merge_metadata_fieldnames([], rows[0].keys())
-        rows_list = []
-
-    for prev in rows_list:
-        for fn in fieldnames:
-            if fn not in prev:
-                prev[fn] = ""
-
-    rows_list.extend(rows)
-    writer = csv.DictWriter(buf, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(rows_list)
-    csv_bytes = buf.getvalue().encode("utf-8")
-    client.put_object(MINIO_BUCKET, METADATA_KEY, io.BytesIO(csv_bytes), len(csv_bytes), "text/csv")
-
+    append_rows_to_csv(client, MINIO_BUCKET, rows, PRIORITY_FIELDS)
     update_parquet(client, MINIO_BUCKET, rows)
 
     if update_checkpoint:
         write_last_ingestion_time(client, run_start_ts)
         print(f"  Checkpoint updated: {LAST_INGESTION_KEY} → {run_start_ts}")
 
-    print(f"\n  Cold-path ingestion complete.")
+    print("\n  Cold-path ingestion complete.")
     print(f"   Batch: {len(rows)} sounds processed and stored.")
     print(f"   Metadata: {METADATA_KEY}\n")
 
 
 def _resolve_batch_size():
     """CLI argv, module-level BATCH_SIZE, or interactive prompt."""
-    import sys
     if BATCH_SIZE is not None:
         try:
             n = int(BATCH_SIZE)
@@ -598,7 +477,6 @@ def _resolve_batch_size():
 
 def _parse_cli_args():
     """Parse CLI arguments: batch_size, --created-after, --checkpoint."""
-    import sys
     batch_size = _resolve_batch_size()
     created_after = None
     update_checkpoint = False

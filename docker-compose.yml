@@ -116,6 +116,48 @@ services:
       start_period: 5s
 
   # ---------------------------------------------------------------
+  #  SonarQube (code quality — http://localhost:9090)
+  # ---------------------------------------------------------------
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: cymatics-sonarqube
+    ports:
+      - "9090:9000"
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonar-postgres:5432/sonarqube
+      SONAR_JDBC_USERNAME: ${SONAR_JDBC_USERNAME:-sonar}
+      SONAR_JDBC_PASSWORD: ${SONAR_JDBC_PASSWORD:-sonar}
+      SONAR_FORCEAUTHENTICATION: "false"
+    volumes:
+      - sonarqube-data:/opt/sonarqube/data
+      - sonarqube-extensions:/opt/sonarqube/extensions
+      - sonarqube-logs:/opt/sonarqube/logs
+    depends_on:
+      sonar-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/api/system/status | grep -q UP"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
+  sonar-postgres:
+    image: postgres:16-alpine
+    container_name: cymatics-sonar-postgres
+    environment:
+      POSTGRES_USER: ${SONAR_JDBC_USERNAME:-sonar}
+      POSTGRES_PASSWORD: ${SONAR_JDBC_PASSWORD:-sonar}
+      POSTGRES_DB: sonarqube
+    volumes:
+      - sonar-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\""]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------
   #  Airflow metadata database (PostgreSQL)
   # ---------------------------------------------------------------
   airflow-postgres:
@@ -184,3 +226,7 @@ services:
 volumes:
   airflow-pgdata:
   airflow-logs:
+  sonarqube-data:
+  sonarqube-extensions:
+  sonarqube-logs:
+  sonar-pgdata:

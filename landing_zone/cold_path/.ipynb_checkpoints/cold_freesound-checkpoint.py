@@ -939,7 +939,7 @@ def run(batch_size=10):
     csv_bytes = buf.getvalue().encode("utf-8")
     client.put_object(MINIO_BUCKET, METADATA_KEY, io.BytesIO(csv_bytes), len(csv_bytes), "text/csv")
 
-    print(f"\n✅  Cold-path ingestion complete.")
+    print("\n  Cold-path ingestion complete.")
     print(f"   Batch: {len(rows)} sounds processed and stored.")
     print(f"   Metadata: {METADATA_KEY}\n")
 
