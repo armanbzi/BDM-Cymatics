@@ -2,40 +2,6 @@
 
 Big Data Management project that transforms audio signals into visual cymatics patterns, extracts acoustic features, and organizes all artifacts into a structured, queryable data lakehouse.
 
-## Repository Structure
-
-```
-BDM-Cymatics/
-├── docker-compose.yml          # Zookeeper, Kafka, MinIO, Airflow (Postgres, webserver, scheduler)
-├── Dockerfile                  # Custom Airflow image (ffmpeg + Python deps)
-├── orchestrate.py              # Manual orchestration CLI (all flows + resource monitoring)
-├── env.example                 # Template for .env
-├── requirements.txt            # Python dependencies
-│
-├── landing_zone/
-│   ├── warm_path/              # Near-real-time: mic → approve → store audio
-│   │   ├── landing_zone_warm.py
-│   │   └── notebooks/landing_zone_warm.ipynb
-│   ├── hot_path/               # Real-time: producer (live viz + Kafka) + consumer
-│   │   ├── landing_zone_hot_producer.py
-│   │   ├── landing_zone_hot_consumer.py
-│   │   └── notebooks/
-│   ├── cold_path/              # Batch: Freesound API & ESC-50 dataset
-│   │   ├── cold_freesound.py
-│   │   ├── cold_esc50.py
-│   │   ├── dag_cold_freesound.py   # Airflow DAG (weekly, 250 sounds)
-│   │   └── notebooks/
-│
-├── trusted_zone/               # Enrichment: spectral features + cymatics generation
-│   ├── trusted_zone_processing.py
-│   └── notebooks/trusted_zone_processing.ipynb
-│
-├── exploitation_zone/          # Delta Lake sync
-│   ├── sync_delta.py
-│   └── notebooks/sync_delta.ipynb
-│
-└── airflow/dags/               # (legacy DAG — see cold_path/ for current)
-```
 
 ## Prerequisites
 
