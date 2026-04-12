@@ -1,7 +1,42 @@
 
 # Run: docker compose up -d
 
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ""
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    # Web UI login — values pulled from .env (AIRFLOW_USERNAME / AIRFLOW_PASSWORD)
+    AIRFLOW_USERNAME: ${AIRFLOW_USERNAME:-admin}
+    AIRFLOW_PASSWORD: ${AIRFLOW_PASSWORD:-admin}
+    # forward project env vars so DAG tasks can reach MinIO / Freesound
+    MINIO_ENDPOINT: minio:9000
+    MINIO_ACCESS_KEY: admin
+    MINIO_SECRET_KEY: password
+    MINIO_SECURE: "false"
+    MINIO_BUCKET: landing-zone
+    FREESOUND_API_KEY: ${FREESOUND_API_KEY:-}
+  volumes:
+    - ./landing_zone/cold_path:/opt/airflow/dags/cold_path
+    - ./landing_zone:/opt/airflow/landing_zone
+    - ./.env:/opt/airflow/.env:ro
+    - airflow-logs:/opt/airflow/logs
+  depends_on:
+    airflow-postgres:
+      condition: service_healthy
+    minio:
+      condition: service_healthy
+
 services:
+  # ---------------------------------------------------------------
+  #  Zookeeper + Kafka
+  # ---------------------------------------------------------------
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: cymatics-zookeeper
@@ -29,9 +64,10 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
@@ -41,6 +77,25 @@ services:
       retries: 5
       start_period: 15s
 
+  # ---------------------------------------------------------------
+  #  Kafka UI (http://localhost:8085)
+  # ---------------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: cymatics-kafka-ui
+    ports:
+      - "8085:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: cymatics
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------
+  #  MinIO (object storage)
+  # ---------------------------------------------------------------
   minio:
     image: minio/minio:latest
     container_name: cymatics-minio
@@ -59,3 +114,73 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+
+  # ---------------------------------------------------------------
+  #  Airflow metadata database (PostgreSQL)
+  # ---------------------------------------------------------------
+  airflow-postgres:
+    image: postgres:16-alpine
+    container_name: cymatics-airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------
+  #  Airflow — one-shot DB init
+  # ---------------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    container_name: cymatics-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username "$$AIRFLOW_USERNAME" \
+          --password "$$AIRFLOW_PASSWORD" \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com || true
+    restart: "no"
+
+  # ---------------------------------------------------------------
+  #  Airflow webserver (UI at http://localhost:8080)
+  # ---------------------------------------------------------------
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: cymatics-airflow-webserver
+    command: airflow webserver
+    ports:
+      - "8080:8080"
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------
+  #  Airflow scheduler
+  # ---------------------------------------------------------------
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: cymatics-airflow-scheduler
+    command: airflow scheduler
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  airflow-pgdata:
+  airflow-logs:

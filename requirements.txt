@@ -1,0 +1,30 @@
+# Core
+numpy
+scipy
+pyarrow
+
+# MinIO object storage
+minio
+
+# Kafka streaming (hot path)
+kafka-python
+
+# Audio recording (warm & hot paths)
+sounddevice
+
+# Cymatics visualization (trusted zone + warm/hot preview)
+opencv-python
+
+# Environment & config
+python-dotenv
+
+# HTTP API access (Freesound cold path)
+requests
+
+# Delta Lake (exploitation zone)
+deltalake
+
+# Resource monitoring (orchestrator)
+psutil
+
+# ffmpeg is also required system-wide (apt install ffmpeg / brew install ffmpeg)

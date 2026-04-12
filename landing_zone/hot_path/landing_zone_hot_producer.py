@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-Landing Zone — Hot path: audio capture → store in MinIO → metadata to Kafka → consumer.
+Landing Zone — Hot path, producer
 
 - Live: shows the cymatics pattern in real time; and in every 5s we:
   1. Upload audio to MinIO (audio/hot-path/raw/<uuid>.wav)
   2. Send metadata-only message to Kafka (audio_path, bucket, timestamp, sample_rate)
 - Consumer (landing_zone_hot_consumer.py) downloads audio from MinIO and processes → video, image, CSV.
 
-run the docker compose file to have the needed containers (MinIO, Kafka/zookeeper) running 
-and the needed environment variables set.
 """
 
 import json
@@ -341,24 +339,46 @@ def run():
     ensure_minio_raw(client)
 
     servers = KAFKA_BOOTSTRAP_SERVERS.split(",")
-    try:
-        admin = KafkaAdminClient(bootstrap_servers=servers)
-        existing_topics = admin.list_topics()
-        if KAFKA_TOPIC not in existing_topics:
-            try:
-                admin.create_topics(
-                    [NewTopic(name=KAFKA_TOPIC, num_partitions=1, replication_factor=1)],
-                    validate_only=False,
-                )
-            except TopicAlreadyExistsError:
-                pass
-        admin.close()
-    except Exception as e:
-        print(f"  [hot] Topic ensure skipped: {e}")
-    producer = KafkaProducer(
-        bootstrap_servers=servers,
-        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-    )
+
+    MAX_RETRIES = 5
+    RETRY_DELAY = 3
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            admin = KafkaAdminClient(bootstrap_servers=servers)
+            existing_topics = admin.list_topics()
+            if KAFKA_TOPIC not in existing_topics:
+                try:
+                    admin.create_topics(
+                        [NewTopic(name=KAFKA_TOPIC, num_partitions=1, replication_factor=1)],
+                        validate_only=False,
+                    )
+                except TopicAlreadyExistsError:
+                    pass
+            admin.close()
+            break
+        except Exception as e:
+            if attempt == MAX_RETRIES:
+                print(f"  [hot] Topic ensure skipped after {MAX_RETRIES} attempts: {e}")
+            else:
+                print(f"  [hot] Kafka not ready (attempt {attempt}/{MAX_RETRIES}), retrying in {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            producer = KafkaProducer(
+                bootstrap_servers=servers,
+                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            )
+            break
+        except Exception as e:
+            if attempt == MAX_RETRIES:
+                raise RuntimeError(
+                    f"Could not connect to Kafka after {MAX_RETRIES} attempts: {e}\n"
+                    "  Make sure Kafka is running: docker compose up -d kafka"
+                ) from e
+            print(f"  [hot producer] Kafka not ready (attempt {attempt}/{MAX_RETRIES}), retrying in {RETRY_DELAY}s...")
+            time.sleep(RETRY_DELAY)
 
     vz = build_zones(SIM_RES)
     v_sources = build_zone_sources(SIM_RES, vz)
