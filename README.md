@@ -5,7 +5,7 @@ Big Data Management project that transforms audio files into visual cymatics pat
 
 ## Prerequisites
 
-- **Docker** and **Docker Compose** (for MinIO, Kafka, Zookeeper, Airflow)
+- **Docker** and **Docker Compose** (for MinIO, Kafka, Zookeeper, Airflow, optional SonarQube)
 - **Python 3.10+**
 - **ffmpeg** (for audio decoding in cold path)
 - A microphone (for warm and hot paths)
@@ -35,7 +35,7 @@ docker compose build
 docker compose up -d
 ```
 
-This starts: **Zookeeper**, **Kafka**, **MinIO** (console at http://localhost:9001), **PostgreSQL** (Airflow metadata DB), **Airflow webserver** (http://localhost:8080), and **Airflow scheduler**.
+This starts: **Zookeeper**, **Kafka**, **MinIO** (console at http://localhost:9001), **PostgreSQL** (Airflow metadata DB), **Airflow webserver** (http://localhost:8080), **Airflow scheduler**, and **SonarQube** (http://localhost:9090 — first boot can take about a minute before the UI is ready).
 
 ### 4. Run pipelines
 
@@ -55,6 +55,7 @@ Interactive menu with live CPU/RAM monitoring. Supports all flows:
 | 4 | Cold: ESC-50 | Batch ingest from ESC-50 dataset |
 | 5 | Trusted zone | Enrich all landing-zone audio (features + cymatics) |
 | 6 | Sync Delta Lake | Parquet → Delta Lake table |
+| 7 | SonarQube | Run `sonar-scanner` against this repo and print quality metrics |
 
 #### Option B: Run scripts directly
 
@@ -117,6 +118,39 @@ See `env.example` for all options:
 | `ESC50_BASE_PATH` | — | Local ESC-50 path (auto-downloads if missing) |
 | `AIRFLOW_USERNAME` | `admin` | Airflow web UI username |
 | `AIRFLOW_PASSWORD` | `admin` | Airflow web UI password |
+| `SONAR_TOKEN` | — | SonarQube user token (preferred for scans); create at http://localhost:9090/account/security |
+| `SONAR_USERNAME` | `admin` | Fallback scanner login if `SONAR_TOKEN` is unset |
+| `SONAR_PASSWORD` | `admin` | Password for `SONAR_USERNAME` |
+| `SONAR_JDBC_USERNAME` | `sonar` | PostgreSQL user for the SonarQube container (must match `docker-compose`) |
+| `SONAR_JDBC_PASSWORD` | `sonar` | PostgreSQL password for SonarQube |
+
+## SonarQube (code quality)
+
+SonarQube tracks **bugs**, **vulnerabilities**, **code smells**, **duplication**, and **maintainability** so you can prioritize refactors and harden the Python pipelines over time. Configuration lives in `sonar-project.properties` (project key `bdm-cymatics`, Python sources and sensible exclusions for `data/`, `venv/`, etc.).
+
+1. **Start the server** (if it is not already up from `docker compose up -d`):
+
+   ```bash
+   docker compose up -d sonarqube
+   ```
+
+   Open http://localhost:9090, complete the first-time setup if prompted, and align `.env` with `env.example` for `SONAR_JDBC_*` and scanner auth.
+
+2. **Install the scanner** on your machine (the UI alone does not analyze code):
+
+   ```bash
+   brew install sonar-scanner
+   ```
+
+   Or follow the [official SonarScanner install guide](https://docs.sonarsource.com/sonarqube/latest/analyzing-source-code/scanners/sonarscanner/).
+
+3. **Run an analysis** from the project root:
+
+   - **Recommended:** `python orchestrate.py` → choose **\[7\] SonarQube code analysis**. The script checks that SonarQube is ready, runs the scanner using `sonar-project.properties`, then prints a short summary and links to the full dashboard: http://localhost:9090/dashboard?id=bdm-cymatics.
+
+   - **Manual:** after setting `SONAR_TOKEN` (or `SONAR_USERNAME` + `SONAR_PASSWORD`) in `.env`, run `sonar-scanner` in this directory.
+
+Use the SonarQube **Issues** and **Measures** views to drive incremental improvements (fix hotspots, reduce duplication, clear security hotspots) before merging larger changes.
 
 ## MinIO Bucket Layout
 
