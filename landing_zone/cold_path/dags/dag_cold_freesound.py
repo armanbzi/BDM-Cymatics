@@ -37,8 +37,6 @@ default_args = {
 }
 
 
-# ── task callables ──────────────────────────────────────────────────────────
-
 def _ingest_freesound(**context):
     """Import and run the cold-path Freesound ingestion script."""
     import os
@@ -57,8 +55,11 @@ def _ingest_freesound(**context):
     log.info("  Retry policy     : %d retries, exponential backoff", default_args["retries"])
     log.info("=" * 60)
 
-    project_root = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
+    project_root = os.environ.get(
+        "CYMATICS_PROJECT_ROOT",
+        os.path.abspath(
+            os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
+        ),
     )
     cold_path_dir = os.path.join(project_root, "landing_zone", "cold_path")
     if cold_path_dir not in sys.path:
@@ -67,10 +68,14 @@ def _ingest_freesound(**context):
         sys.path.insert(0, project_root)
 
     from dotenv import load_dotenv
+
     dotenv_path = os.path.join(project_root, ".env")
     if os.path.isfile(dotenv_path):
         load_dotenv(dotenv_path, override=False)
-        log.info("  Loaded .env from %s (override=False, docker-compose env takes priority)", dotenv_path)
+        log.info(
+            "  Loaded .env from %s (override=False, docker-compose env takes priority)",
+            dotenv_path,
+        )
 
     log.info("  MINIO_ENDPOINT   : %s", os.environ.get("MINIO_ENDPOINT", "(not set)"))
     log.info("  FREESOUND_API_KEY: %s", "(set)" if os.environ.get("FREESOUND_API_KEY") else "(not set)")
@@ -90,8 +95,6 @@ def _ingest_freesound(**context):
     log.info("=" * 60)
 
 
-# ── DAG definition ──────────────────────────────────────────────────────────
-
 with DAG(
     dag_id="cold_freesound_ingestion",
     default_args=default_args,
@@ -109,8 +112,3 @@ with DAG(
         provide_context=True,
     )
 
-    # ── future extensions ────────────
-    # validate_metadata 
-    # store_to_trusted_zone 
-    # ...
-    

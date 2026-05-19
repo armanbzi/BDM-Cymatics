@@ -31,7 +31,7 @@ import cv2
 import time
 from scipy.io import wavfile
 
-from shared.minio_helpers import MINIO_BUCKET, MINIO_SECURE, create_minio_client
+from shared.minio_helpers import LANDING_ZONE_BUCKET, MINIO_SECURE, create_minio_client
 from shared.cymatics_engine import (
     N_ZONES, build_zones, build_zone_sources, analyse_frame,
     compute_interference, displacement_to_brightness, render_composite,
@@ -58,6 +58,10 @@ except ImportError:
 #  Config
 # =============================================================================
 RAW_AUDIO_PREFIX = "audio/hot-path/raw"
+# Archived for trusted-zone Spark merge (device, timestamp) — one JSON object per capture.
+KAFKA_EVENTS_HOT_PREFIX = os.environ.get(
+    "KAFKA_EVENTS_HOT_PREFIX", "metadata/kafka-events/hot-path"
+).strip().strip("/")
 
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092").strip()
 KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC_HOT", "landing-zone-events-hot-path")
@@ -72,12 +76,34 @@ LIVE_DISPLAY_SIZE = 600
 
 def ensure_minio_raw(client):
     """Ensure bucket and raw audio prefix exist."""
-    if not client.bucket_exists(MINIO_BUCKET):
-        client.make_bucket(MINIO_BUCKET)
+    if not client.bucket_exists(LANDING_ZONE_BUCKET):
+        client.make_bucket(LANDING_ZONE_BUCKET)
     try:
-        client.stat_object(MINIO_BUCKET, f"{RAW_AUDIO_PREFIX}/.keep")
+        client.stat_object(LANDING_ZONE_BUCKET, f"{RAW_AUDIO_PREFIX}/.keep")
     except Exception:
-        client.put_object(MINIO_BUCKET, f"{RAW_AUDIO_PREFIX}/.keep", BytesIO(b""), 0)
+        client.put_object(LANDING_ZONE_BUCKET, f"{RAW_AUDIO_PREFIX}/.keep", BytesIO(b""), 0)
+    try:
+        client.stat_object(LANDING_ZONE_BUCKET, f"{KAFKA_EVENTS_HOT_PREFIX}/.keep")
+    except Exception:
+        client.put_object(
+            LANDING_ZONE_BUCKET,
+            f"{KAFKA_EVENTS_HOT_PREFIX}/.keep",
+            BytesIO(b""),
+            0,
+        )
+
+
+def archive_hot_kafka_event(client, payload: dict, capture_id: str) -> None:
+    """Persist Kafka JSON in landing-zone for trusted-zone Spark merge."""
+    key = f"{KAFKA_EVENTS_HOT_PREFIX}/{capture_id}.json"
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    client.put_object(
+        LANDING_ZONE_BUCKET,
+        key,
+        BytesIO(body),
+        len(body),
+        content_type="application/json",
+    )
 
 
 def send_batch_to_kafka(producer, client, batch, device_name="-"):
@@ -98,7 +124,7 @@ def send_batch_to_kafka(producer, client, batch, device_name="-"):
     ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         client.put_object(
-            MINIO_BUCKET,
+            LANDING_ZONE_BUCKET,
             audio_path,
             BytesIO(wav_bytes),
             len(wav_bytes),
@@ -109,7 +135,7 @@ def send_batch_to_kafka(producer, client, batch, device_name="-"):
         return
     payload = {
         "audio_path": audio_path,
-        "bucket": MINIO_BUCKET,
+        "bucket": LANDING_ZONE_BUCKET,
         "timestamp": ts,
         "sample_rate": SAMPLE_RATE,
         "duration": DURATION,
@@ -118,6 +144,10 @@ def send_batch_to_kafka(producer, client, batch, device_name="-"):
     try:
         producer.send(KAFKA_TOPIC, value=payload)
         producer.flush()
+        try:
+            archive_hot_kafka_event(client, payload, capture_id)
+        except Exception as e:
+            print(f"  [hot] Kafka archive to MinIO failed: {e}")
     except Exception as e:
         print(f"  [hot] Kafka send failed: {e}")
 

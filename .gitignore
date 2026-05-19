@@ -7,6 +7,12 @@ data/
 freesound_audio/
 freesound_meta/
 
+
+# data lake
+minio/
+kafka/
+
+
 # Python cache
 __pycache__/
 *.pyc

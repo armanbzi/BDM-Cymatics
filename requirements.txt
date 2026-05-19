@@ -3,6 +3,9 @@ numpy
 scipy
 pyarrow
 
+# Trusted zone — PySpark driver on host auto-uses Java 11 or 17; Spark cluster runs in Docker
+pyspark>=3.5,<3.7
+
 # MinIO object storage
 minio
 
@@ -21,8 +24,9 @@ python-dotenv
 # HTTP API access (Freesound cold path)
 requests
 
-# Delta Lake (exploitation zone)
+# Delta Lake + KPI queries (data consumption)
 deltalake
+pandas
 
 # Resource monitoring (orchestrator)
 psutil

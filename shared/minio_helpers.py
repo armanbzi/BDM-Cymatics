@@ -2,29 +2,35 @@
 Shared MinIO, CSV and Parquet helpers used across all pipeline stages.
 """
 
-import os
-import io
 import csv
+import io
+import os
 
-from minio import Minio
 import pyarrow as pa
 import pyarrow.parquet as pq
+from minio import Minio
 
-# =============================================================================
-#  MinIO config (from env)
-# =============================================================================
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "")
 MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
-MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "landing-zone")
+LANDING_ZONE_BUCKET = (
+    os.environ.get("LANDING_ZONE_BUCKET", "landing-zone").strip() or "landing-zone"
+)
 
 METADATA_KEY = "metadata/observations.csv"
 PARQUET_KEY = "metadata/observations.parquet"
 
 LANDING_METADATA_FIELDS = [
-    "uuid", "source_id", "time_recorded/added", "duration",
-    "audio_size", "audio_path", "audio_format", "source", "peak_frequency_hz",
+    "uuid",
+    "source_id",
+    "time_recorded/added",
+    "duration",
+    "audio_size",
+    "audio_path",
+    "audio_format",
+    "source",
+    "peak_frequency_hz",
 ]
 
 
@@ -35,6 +41,29 @@ def create_minio_client():
         secret_key=MINIO_SECRET_KEY,
         secure=MINIO_SECURE,
     )
+
+
+def is_unreachable_minio(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionError, TimeoutError, BrokenPipeError)):
+        return True
+    mod = getattr(type(exc), "__module__", "") or ""
+    if mod.startswith("urllib3"):
+        return True
+    s = str(exc).lower()
+    needles = (
+        "connection refused",
+        "actively refused",
+        "name or service not known",
+        "temporary failure",
+        "timed out",
+        "errno 61",
+        "errno 111",
+        "errno 113",
+        "failed to resolve",
+        "nodename nor servname",
+        "network is unreachable",
+    )
+    return any(n in s for n in needles)
 
 
 def ensure_bucket(client, bucket, placeholders):
@@ -50,9 +79,6 @@ def ensure_bucket(client, bucket, placeholders):
     print("  Bucket and folder structure ready.")
 
 
-# =============================================================================
-#  Parquet helpers
-# =============================================================================
 def _rows_to_table(rows):
     if not rows:
         return None
@@ -65,7 +91,8 @@ def read_parquet_from_minio(client, bucket, key=PARQUET_KEY):
     try:
         resp = client.get_object(bucket, key)
         data = resp.read()
-        resp.close(); resp.release_conn()
+        resp.close()
+        resp.release_conn()
         return pq.read_table(io.BytesIO(data))
     except Exception:
         return None
@@ -83,14 +110,16 @@ def _unify_schemas(existing_table, new_table):
         return new_table
     if new_table is None:
         return existing_table
-    all_names = list(dict.fromkeys(
-        list(existing_table.schema.names) + list(new_table.schema.names)
-    ))
+    all_names = list(
+        dict.fromkeys(list(existing_table.schema.names) + list(new_table.schema.names))
+    )
+
     def pad_table(tbl, target_names):
         for name in target_names:
             if name not in tbl.schema.names:
                 tbl = tbl.append_column(name, pa.array([""] * tbl.num_rows, type=pa.string()))
         return tbl.select(target_names)
+
     return pa.concat_tables([pad_table(existing_table, all_names), pad_table(new_table, all_names)])
 
 
@@ -105,15 +134,7 @@ def update_parquet(client, bucket, new_rows, key=PARQUET_KEY):
     return combined
 
 
-# =============================================================================
-#  CSV helpers
-# =============================================================================
 def merge_metadata_fieldnames(existing_names, row_keys, priority_fields=None):
-    """Build a unified fieldnames list preserving order.
-
-    *priority_fields* are inserted before any new keys from *row_keys*.
-    Falls back to LANDING_METADATA_FIELDS when *priority_fields* is None.
-    """
     if priority_fields is None:
         priority_fields = LANDING_METADATA_FIELDS
     out = list(existing_names or [])
@@ -130,31 +151,24 @@ def merge_metadata_fieldnames(existing_names, row_keys, priority_fields=None):
 
 
 def read_csv_from_minio(client, bucket, key=METADATA_KEY):
-    """Return raw CSV text from MinIO, or None if not found."""
     try:
         resp = client.get_object(bucket, key)
         data = resp.read().decode("utf-8")
-        resp.close(); resp.release_conn()
+        resp.close()
+        resp.release_conn()
         return data
     except Exception:
         return None
 
 
-def append_rows_to_csv(client, bucket, new_rows, priority_fields=None,
-                       key=METADATA_KEY):
-    """Read existing CSV from MinIO, append *new_rows*, write back."""
+def append_rows_to_csv(client, bucket, new_rows, priority_fields=None, key=METADATA_KEY):
     existing = read_csv_from_minio(client, bucket, key)
-
     if existing:
         reader = csv.DictReader(io.StringIO(existing))
-        fieldnames = merge_metadata_fieldnames(
-            reader.fieldnames, new_rows[0].keys(), priority_fields,
-        )
+        fieldnames = merge_metadata_fieldnames(reader.fieldnames, new_rows[0].keys(), priority_fields)
         rows_list = list(reader)
     else:
-        fieldnames = merge_metadata_fieldnames(
-            [], new_rows[0].keys(), priority_fields,
-        )
+        fieldnames = merge_metadata_fieldnames([], new_rows[0].keys(), priority_fields)
         rows_list = []
 
     for prev in rows_list:
@@ -173,13 +187,13 @@ def append_rows_to_csv(client, bucket, new_rows, priority_fields=None,
 
 def load_existing_source_ids(client, bucket=None, key=METADATA_KEY):
     """Return set of source_id strings already stored in metadata CSV."""
-    bucket = bucket or MINIO_BUCKET
+    bucket = bucket or LANDING_ZONE_BUCKET
     try:
         resp = client.get_object(bucket, key)
         data = resp.read().decode("utf-8")
-        resp.close(); resp.release_conn()
+        resp.close()
+        resp.release_conn()
     except Exception:
         return set()
     reader = csv.DictReader(io.StringIO(data))
-    return {row.get("source_id", "").strip() for row in reader
-            if row.get("source_id", "").strip()}
+    return {row.get("source_id", "").strip() for row in reader if row.get("source_id", "").strip()}

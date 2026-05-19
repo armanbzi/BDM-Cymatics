@@ -39,10 +39,11 @@ from scipy.io import wavfile
 
 from shared.minio_helpers import (
     MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_SECURE,
-    MINIO_BUCKET, create_minio_client, ensure_bucket,
+    LANDING_ZONE_BUCKET, create_minio_client, ensure_bucket,
     METADATA_KEY, LANDING_METADATA_FIELDS,
     update_parquet, append_rows_to_csv, load_existing_source_ids,
 )
+from shared.sync_delta import sync_observations_to_delta
 from shared.freq_detection import detect_peak_freq
 
 # =============================================================================
@@ -244,7 +245,7 @@ LAST_INGESTION_KEY = "metadata/freesound_last_ingestion.txt"
 def read_last_ingestion_time(client):
     """Read the last-ingestion ISO timestamp from MinIO (or None)."""
     try:
-        resp = client.get_object(MINIO_BUCKET, LAST_INGESTION_KEY)
+        resp = client.get_object(LANDING_ZONE_BUCKET, LAST_INGESTION_KEY)
         ts = resp.read().decode("utf-8").strip()
         resp.close(); resp.release_conn()
         return ts if ts else None
@@ -255,7 +256,7 @@ def read_last_ingestion_time(client):
 def write_last_ingestion_time(client, ts_iso):
     """Persist the current ingestion timestamp to MinIO."""
     data = ts_iso.encode("utf-8")
-    client.put_object(MINIO_BUCKET, LAST_INGESTION_KEY,
+    client.put_object(LANDING_ZONE_BUCKET, LAST_INGESTION_KEY,
                       io.BytesIO(data), len(data), "text/plain")
 
 
@@ -285,7 +286,7 @@ def process_sound(client, sound, audio_np, query):
         wavfile.write(wav_tmp, SAMPLE_RATE, (audio * 32767).astype(np.int16))
         audio_size = os.path.getsize(wav_tmp)
         with open(wav_tmp, "rb") as f:
-            client.put_object(MINIO_BUCKET, audio_key, f, audio_size, "audio/wav")
+            client.put_object(LANDING_ZONE_BUCKET, audio_key, f, audio_size, "audio/wav")
         os.remove(wav_tmp)
     except Exception as e:
         print(f"    Upload failed: {e}")
@@ -332,7 +333,7 @@ def run(batch_size=10, created_after=None, update_checkpoint=False):
 
     try:
         client = create_minio_client()
-        ensure_bucket(client, MINIO_BUCKET, ["metadata/.keep", f"audio/{SOURCE}/.keep"])
+        ensure_bucket(client, LANDING_ZONE_BUCKET, ["metadata/.keep", f"audio/{SOURCE}/.keep"])
     except Exception as e:
         raise RuntimeError(
             f"Cannot connect to MinIO at {MINIO_ENDPOINT}. "
@@ -347,7 +348,7 @@ def run(batch_size=10, created_after=None, update_checkpoint=False):
 
     run_start_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    existing_ids = load_existing_source_ids(client, MINIO_BUCKET)
+    existing_ids = load_existing_source_ids(client, LANDING_ZONE_BUCKET)
     if existing_ids:
         print(f"  Found {len(existing_ids)} existing records in metadata — duplicates will be skipped.")
 
@@ -444,8 +445,9 @@ def run(batch_size=10, created_after=None, update_checkpoint=False):
             write_last_ingestion_time(client, run_start_ts)
         return
 
-    append_rows_to_csv(client, MINIO_BUCKET, rows, PRIORITY_FIELDS)
-    update_parquet(client, MINIO_BUCKET, rows)
+    append_rows_to_csv(client, LANDING_ZONE_BUCKET, rows, PRIORITY_FIELDS)
+    update_parquet(client, LANDING_ZONE_BUCKET, rows)
+    sync_observations_to_delta(client, LANDING_ZONE_BUCKET, zone_label="landing")
 
     if update_checkpoint:
         write_last_ingestion_time(client, run_start_ts)

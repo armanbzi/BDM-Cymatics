@@ -1,13 +1,13 @@
 
-# Run: docker compose up -d
+# Run: docker compose up -d (includes Spark master/workers/history alongside MinIO, Kafka, Airflow, SonarQube).
 
 x-airflow-common: &airflow-common
   build:
     context: .
-    dockerfile: Dockerfile
+    dockerfile: Docker/airflow_Dockerfile
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_POSTGRES_USER:-airflow}:${AIRFLOW_POSTGRES_PASSWORD:-airflow}@airflow-postgres:5432/${AIRFLOW_POSTGRES_DB:-airflow}
     AIRFLOW__CORE__FERNET_KEY: ""
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
@@ -17,15 +17,22 @@ x-airflow-common: &airflow-common
     AIRFLOW_PASSWORD: ${AIRFLOW_PASSWORD:-admin}
     # forward project env vars so DAG tasks can reach MinIO / Freesound
     MINIO_ENDPOINT: minio:9000
-    MINIO_ACCESS_KEY: admin
-    MINIO_SECRET_KEY: password
-    MINIO_SECURE: "false"
-    MINIO_BUCKET: landing-zone
+    MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-admin}
+    MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-password}
+    MINIO_SECURE: "${MINIO_SECURE:-false}"
+    LANDING_ZONE_BUCKET: ${LANDING_ZONE_BUCKET:-landing-zone}
+    TRUSTED_ZONE_BUCKET: ${TRUSTED_ZONE_BUCKET:-trusted-zone}
+    EXPLOITATION_ZONE_BUCKET: ${EXPLOITATION_ZONE_BUCKET:-exploitation-zone}
     FREESOUND_API_KEY: ${FREESOUND_API_KEY:-}
+    CYMATICS_PROJECT_ROOT: /opt/airflow/project
   volumes:
-    - ./landing_zone/cold_path:/opt/airflow/dags/cold_path
+    - ./landing_zone/cold_path/dags:/opt/airflow/dags/cold_path
+    - ./trusted_zone/dags:/opt/airflow/dags/trusted_zone
+    - ./exploitation_zone/dags:/opt/airflow/dags/exploitation_zone
+    - .:/opt/airflow/project
     - ./landing_zone:/opt/airflow/landing_zone
     - ./.env:/opt/airflow/.env:ro
+    - /var/run/docker.sock:/var/run/docker.sock
     - airflow-logs:/opt/airflow/logs
   depends_on:
     airflow-postgres:
@@ -104,8 +111,8 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: admin
-      MINIO_ROOT_PASSWORD: password
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-password}
     volumes:
       - ./minio:/data
     healthcheck:
@@ -114,6 +121,182 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+
+  # ---------------------------------------------------------------
+  #  Apache Spark — standalone cluster (Docker/spark_Dockerfile; bitnami/spark tags removed from Docker Hub)
+  #  Spark Master UI: http://localhost:8088
+  #  History UI (18080): logs at s3a://$TRUSTED_ZONE_BUCKET/$SPARK_EVENT_LOG_PREFIX/
+  #  Batch jobs: trusted-spark-batch | exploitation-spark-batch (PySpark → minio:9000)
+  # ---------------------------------------------------------------
+  spark-master:
+    build:
+      context: .
+      dockerfile: Docker/spark_Dockerfile
+    image: cymatics-spark:3.5.2
+    container_name: cymatics-spark-master
+    hostname: spark-master
+    command: /opt/spark/sbin/start-master.sh
+    environment:
+      SPARK_NO_DAEMONIZE: "1"
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+    ports:
+      - "7077:7077"
+      - "8088:8080"
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  spark-worker-1:
+    image: cymatics-spark:3.5.2
+    container_name: cymatics-spark-worker-1
+    command:
+      - /opt/spark/sbin/start-worker.sh
+      - --memory
+      - 2G
+      - --cores
+      - "2"
+      - spark://spark-master:7077
+    environment:
+      SPARK_NO_DAEMONIZE: "1"
+    depends_on:
+      minio:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  spark-worker-2:
+    image: cymatics-spark:3.5.2
+    container_name: cymatics-spark-worker-2
+    command:
+      - /opt/spark/sbin/start-worker.sh
+      - --memory
+      - 2G
+      - --cores
+      - "2"
+      - spark://spark-master:7077
+    environment:
+      SPARK_NO_DAEMONIZE: "1"
+    depends_on:
+      minio:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  spark-history:
+    image: cymatics-spark:3.5.2
+    container_name: cymatics-spark-history
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        exec /opt/spark/bin/spark-class
+        -Dspark.history.fs.logDirectory=s3a://${TRUSTED_ZONE_BUCKET:-trusted-zone}/${SPARK_EVENT_LOG_PREFIX:-spark-logs}/
+        -Dspark.history.ui.port=18080
+        -Dspark.hadoop.fs.s3a.endpoint=http://minio:9000
+        -Dspark.hadoop.fs.s3a.access.key=${MINIO_ACCESS_KEY:-admin}
+        -Dspark.hadoop.fs.s3a.secret.key=${MINIO_SECRET_KEY:-password}
+        -Dspark.hadoop.fs.s3a.path.style.access=true
+        -Dspark.hadoop.fs.s3a.connection.ssl.enabled=${MINIO_SECURE:-false}
+        -Dspark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+        -Dspark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+        org.apache.spark.deploy.history.HistoryServer
+    ports:
+      - "18080:18080"
+    depends_on:
+      minio:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
+
+  # One-shot PySpark metadata batch on the compose network (driver + MinIO S3A in Docker).
+  # Usage: docker compose run --rm trusted-spark-batch
+  trusted-spark-batch:
+    image: cymatics-spark:3.5.2
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      CYMATICS_IN_DOCKER: "1"
+      PYTHONPATH: /app:/app/trusted_zone
+      MINIO_ENDPOINT: minio:9000
+      SPARK_MASTER: spark://spark-master:7077
+      SPARK_S3A_ENDPOINT: http://minio:9000
+      TRUSTED_ZONE_BUCKET: ${TRUSTED_ZONE_BUCKET:-trusted-zone}
+      LANDING_ZONE_BUCKET: ${LANDING_ZONE_BUCKET:-landing-zone}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-admin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-password}
+      MINIO_SECURE: "${MINIO_SECURE:-false}"
+      SPARK_EVENT_LOG_PREFIX: ${SPARK_EVENT_LOG_PREFIX:-spark-logs/}
+      SPARK_EVENT_LOG_ENABLED: ${SPARK_EVENT_LOG_ENABLED:-true}
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+      SPARK_SQL_SHUFFLE_PARTITIONS: ${SPARK_SQL_SHUFFLE_PARTITIONS:-8}
+      SPARK_LOG_LEVEL: ${SPARK_LOG_LEVEL:-WARN}
+      SPARK_APP_NAME: trusted-zone-processing
+      # Compose overrides host shell / .env Jupyter settings (compose run forwards shell env).
+      SPARK_DRIVER_BIND_ADDRESS: "0.0.0.0"
+      SPARK_DRIVER_HOST: ""
+      SPARK_ALLOW_HOST_DRIVER: "0"
+    command: ["python3", "trusted_zone/spark_trusted_zone.py"]
+    depends_on:
+      minio:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
+      spark-worker-1:
+        condition: service_started
+      spark-worker-2:
+        condition: service_started
+
+  # One-shot PySpark spectral features: trusted-zone → exploitation-zone workset.
+  # Usage: docker compose run --rm exploitation-spark-batch
+  exploitation-spark-batch:
+    image: cymatics-spark:3.5.2
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      CYMATICS_IN_DOCKER: "1"
+      PYTHONPATH: /app:/app/exploitation_zone:/app/trusted_zone
+      MINIO_ENDPOINT: minio:9000
+      SPARK_MASTER: spark://spark-master:7077
+      SPARK_S3A_ENDPOINT: http://minio:9000
+      TRUSTED_ZONE_BUCKET: ${TRUSTED_ZONE_BUCKET:-trusted-zone}
+      EXPLOITATION_ZONE_BUCKET: ${EXPLOITATION_ZONE_BUCKET:-exploitation-zone}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-admin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-password}
+      MINIO_SECURE: "${MINIO_SECURE:-false}"
+      SPARK_EVENT_LOG_PREFIX: ${SPARK_EVENT_LOG_PREFIX:-spark-logs/}
+      SPARK_EVENT_LOG_ENABLED: ${SPARK_EVENT_LOG_ENABLED:-true}
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+      SPARK_SQL_SHUFFLE_PARTITIONS: ${SPARK_SQL_SHUFFLE_PARTITIONS:-8}
+      SPARK_LOG_LEVEL: ${SPARK_LOG_LEVEL:-WARN}
+      SPARK_APP_NAME: exploitation-zone-processing
+      SPARK_PENDING_WORKSET_KEY: ${SPARK_PENDING_WORKSET_KEY:-metadata/spark_pending_workset.json}
+      SPARK_DRIVER_BIND_ADDRESS: "0.0.0.0"
+      SPARK_DRIVER_HOST: ""
+      SPARK_ALLOW_HOST_DRIVER: "0"
+    command: ["python3", "exploitation_zone/spark_exploitation_zone.py"]
+    depends_on:
+      minio:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
+      spark-worker-1:
+        condition: service_started
+      spark-worker-2:
+        condition: service_started
 
   # ---------------------------------------------------------------
   #  SonarQube (code quality — http://localhost:9090)
@@ -164,15 +347,15 @@ services:
     image: postgres:16-alpine
     container_name: cymatics-airflow-postgres
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      POSTGRES_USER: ${AIRFLOW_POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${AIRFLOW_POSTGRES_DB:-airflow}
     volumes:
       - airflow-pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\""]
       interval: 5s
       timeout: 5s
       retries: 5

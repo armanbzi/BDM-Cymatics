@@ -53,9 +53,10 @@ Interactive menu with live CPU/RAM monitoring. Supports all flows:
 | 2 | Hot path | Producer (live viz + Kafka) + consumer in parallel |
 | 3 | Cold: Freesound | Batch ingest from Freesound API |
 | 4 | Cold: ESC-50 | Batch ingest from ESC-50 dataset |
-| 5 | Trusted zone | Enrich all landing-zone audio (features + cymatics) |
-| 6 | Sync Delta Lake | Parquet → Delta Lake table |
-| 7 | SonarQube | Run `sonar-scanner` against this repo and print quality metrics |
+| 5 | Trusted zone | Cymatics + peak metadata from landing-zone |
+| 6 | Exploitation zone | Spark spectral features + Python MFCC/harmonic |
+| 7 | Sync Delta Lake | All zones: Parquet → Delta tables (also runs automatically after each zone) |
+| 8 | SonarQube | Run `sonar-scanner` against this repo and print quality metrics |
 
 #### Option B: Run scripts directly
 
@@ -87,21 +88,38 @@ python landing_zone/cold_path/cold_freesound.py 50
 python landing_zone/cold_path/cold_esc50.py 50
 ```
 
-**Trusted zone** (processes all unprocessed landing-zone records):
+**Trusted zone** (cymatics image/video + peak metadata; no spectral features):
 
 ```bash
 python trusted_zone/trusted_zone_processing.py
 ```
 
-**Sync Delta Lake** (syncs Parquet metadata to Delta Lake table):
+**Exploitation zone** (feature derivation — Spark batch in Docker, then host Python):
 
 ```bash
-python exploitation_zone/sync_delta.py
+docker compose up -d
+python exploitation_zone/exploitation_zone_processing.py
+# Spark-only batch: docker compose run --rm exploitation-spark-batch
 ```
+
+**Delta sync** (runs automatically at the end of each zone’s processing script; manual):
+
+```bash
+python shared/sync_delta.py              # all zones
+python shared/sync_delta.py trusted        # one zone
+```
+
+**Data consumption** (Jupyter — inspect Delta tables across zones):
+
+Open `data_consumption/notebooks/delta_lake_discovery.ipynb` after MinIO is up and zone processing has run. KPIs: orchestrator option **9** → `data_consumption/tasks/discover_kpis.py`, or `data_consumption/notebooks/kpi_queries.ipynb`.
 
 #### Option C: Airflow (automated scheduling)
 
-Open http://localhost:8080, log in with `AIRFLOW_USERNAME`/`AIRFLOW_PASSWORD` from `.env`, and unpause the `cold_freesound_ingestion` DAG. It runs weekly, ingesting up to 250 new sounds.
+Open http://localhost:8080, log in with `AIRFLOW_USERNAME`/`AIRFLOW_PASSWORD` from `.env`, and unpause DAGs:
+
+- `cold_freesound_ingestion` — weekly, up to 250 new Freesound sounds into landing-zone.
+- `trusted_zone_processing` — every 2 weeks, full Spark + Python trusted pipeline (deduplicates on UUIDs already in trusted metadata).
+- `exploitation_zone_processing` — every 15 days (first run 15 days after trusted anchor), Spark + Python exploitation pipeline (anti-join on exploitation UUIDs).
 
 ## Environment Variables
 
@@ -112,7 +130,7 @@ See `env.example` for all options:
 | `MINIO_ENDPOINT` | `localhost:9000` | MinIO API endpoint |
 | `MINIO_ACCESS_KEY` | `admin` | MinIO access key |
 | `MINIO_SECRET_KEY` | `password` | MinIO secret key |
-| `MINIO_BUCKET` | `landing-zone` | Default bucket |
+| `LANDING_ZONE_BUCKET` | `landing-zone` | Landing-zone object-store bucket |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker |
 | `FREESOUND_API_KEY` | — | Freesound API key ([get one](https://freesound.org/apiv2/apply/)) |
 | `ESC50_BASE_PATH` | — | Local ESC-50 path (auto-downloads if missing) |
@@ -146,7 +164,7 @@ SonarQube tracks **bugs**, **vulnerabilities**, **code smells**, **duplication**
 
 3. **Run an analysis** from the project root:
 
-   - **Recommended:** `python orchestrate.py` → choose **\[7\] SonarQube code analysis**. The script checks that SonarQube is ready, runs the scanner using `sonar-project.properties`, then prints a short summary and links to the full dashboard: http://localhost:9090/dashboard?id=bdm-cymatics.
+   - **Recommended:** `python orchestrate.py` → choose **\[8\] SonarQube code analysis**. The script checks that SonarQube is ready, runs the scanner using `sonar-project.properties`, then prints a short summary and links to the full dashboard: http://localhost:9090/dashboard?id=bdm-cymatics.
 
    - **Manual:** after setting `SONAR_TOKEN` (or `SONAR_USERNAME` + `SONAR_PASSWORD`) in `.env`, run `sonar-scanner` in this directory.
 
@@ -164,7 +182,7 @@ landing-zone/
 └── metadata/
     ├── observations.csv
     ├── observations.parquet
-    ├── observations_delta/          # Delta Lake table (after sync)
+    ├── observations_delta/          # Delta Lake (synced with Parquet)
     └── freesound_last_ingestion.txt # Checkpoint for incremental ingestion
 
 trusted-zone/
@@ -173,8 +191,31 @@ trusted-zone/
 ├── videos/<peak_freq>/<uuid>-<peak_freq>.mp4
 └── metadata/
     ├── observations.csv
-    └── observations.parquet
+    ├── observations.parquet
+    ├── observations_delta/           # Delta Lake (synced with Parquet)
+    └── pending_workset.json          # Spark batch → trusted_zone_processing
+
+exploitation-zone/
+└── metadata/
+    ├── observations.csv              # trusted columns + derived features
+    ├── observations.parquet
+    ├── observations_delta/           # Delta Lake (synced with Parquet)
+    └── spark_pending_workset.json    # Spark batch → exploitation_zone_processing
+
+data_consumption/
+├── tasks/
+│   └── discover_kpis.py              # interactive KPI queries (orchestrator option 9)
+└── notebooks/
+    ├── delta_lake_discovery.ipynb    # inspect zone Delta tables
+    └── kpi_queries.ipynb             # KPIs on exploitation-zone Delta (notebook exploration)
 ```
+
+**Feature split (exploitation zone):**
+
+| Layer | Features |
+|-------|----------|
+| Spark (`spark_exploitation_zone.py`) | `spectral_centroid_hz`, `spectral_bandwidth_hz`, `spectral_rolloff_hz`, `spectral_flatness`, `signal_energy`, `spectral_entropy`, `zero_crossing_rate`, `loudness` |
+| Python (`exploitation_zone_processing.py`) | `MFCCs`, `harmonic_energy_ratio` |
 
 ## Authors
 

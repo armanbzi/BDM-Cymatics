@@ -47,10 +47,11 @@ from scipy.io import wavfile
 
 from shared.minio_helpers import (
     MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_ENDPOINT,
-    MINIO_BUCKET, create_minio_client, ensure_bucket,
+    LANDING_ZONE_BUCKET, create_minio_client, ensure_bucket,
     METADATA_KEY, LANDING_METADATA_FIELDS,
     update_parquet, append_rows_to_csv, load_existing_source_ids,
 )
+from shared.sync_delta import sync_observations_to_delta
 from shared.freq_detection import detect_peak_freq
 
 # =============================================================================
@@ -152,7 +153,7 @@ def process_record(client, audio_np, esc_row):
         wavfile.write(wav_tmp, SAMPLE_RATE, (audio * 32767).astype(np.int16))
         audio_size = os.path.getsize(wav_tmp)
         with open(wav_tmp, "rb") as f:
-            client.put_object(MINIO_BUCKET, audio_key, f, audio_size, "audio/wav")
+            client.put_object(LANDING_ZONE_BUCKET, audio_key, f, audio_size, "audio/wav")
         os.remove(wav_tmp)
     except Exception as e:
         print(f"    Upload failed: {e}")
@@ -228,7 +229,7 @@ def run(batch_size=10):
     print("\n[2/3] Connecting to MinIO...")
     try:
         client = create_minio_client()
-        ensure_bucket(client, MINIO_BUCKET, ["metadata/.keep", f"audio/{SOURCE}/.keep"])
+        ensure_bucket(client, LANDING_ZONE_BUCKET, ["metadata/.keep", f"audio/{SOURCE}/.keep"])
     except Exception as e:
         raise RuntimeError(
             f"Cannot connect to MinIO at {MINIO_ENDPOINT}. "
@@ -245,7 +246,7 @@ def run(batch_size=10):
     print(f"  ESC-50: {len(all_records)} total records, {len(eligible)} in our categories.")
 
     print(f"\n[3/3] Selecting diverse batch of up to {batch_size} records...")
-    existing_ids = load_existing_source_ids(client, MINIO_BUCKET)
+    existing_ids = load_existing_source_ids(client, LANDING_ZONE_BUCKET)
     if existing_ids:
         print(f"  Found {len(existing_ids)} existing records — duplicates will be skipped.")
 
@@ -299,8 +300,9 @@ def run(batch_size=10):
         print("\n  No records processed.")
         return
 
-    append_rows_to_csv(client, MINIO_BUCKET, rows, PRIORITY_FIELDS)
-    update_parquet(client, MINIO_BUCKET, rows)
+    append_rows_to_csv(client, LANDING_ZONE_BUCKET, rows, PRIORITY_FIELDS)
+    update_parquet(client, LANDING_ZONE_BUCKET, rows)
+    sync_observations_to_delta(client, LANDING_ZONE_BUCKET, zone_label="landing")
 
     print("\n  Cold-path ESC-50 ingestion complete.")
     print(f"   Batch: {len(rows)} records across {len(set(r['category'] for r in rows))} categories.")

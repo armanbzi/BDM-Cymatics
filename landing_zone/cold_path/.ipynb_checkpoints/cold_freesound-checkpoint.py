@@ -45,7 +45,7 @@ MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "")
 MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
-MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "landing-zone")
+LANDING_ZONE_BUCKET = os.environ.get("LANDING_ZONE_BUCKET", "landing-zone").strip() or "landing-zone"
 
 FREESOUND_API_KEY = os.environ.get("FREESOUND_API_KEY", "")
 
@@ -560,9 +560,9 @@ def decode_to_numpy(audio_bytes, ext="wav"):
 #  MinIO helpers
 # =============================================================================
 def ensure_minio_structure(client):
-    if not client.bucket_exists(MINIO_BUCKET):
-        client.make_bucket(MINIO_BUCKET)
-        print(f"  Created bucket: {MINIO_BUCKET}")
+    if not client.bucket_exists(LANDING_ZONE_BUCKET):
+        client.make_bucket(LANDING_ZONE_BUCKET)
+        print(f"  Created bucket: {LANDING_ZONE_BUCKET}")
     placeholders = [
         "metadata/.keep",
         f"audio/{SOURCE}/.keep",
@@ -571,9 +571,9 @@ def ensure_minio_structure(client):
     ]
     for key in placeholders:
         try:
-            client.stat_object(MINIO_BUCKET, key)
+            client.stat_object(LANDING_ZONE_BUCKET, key)
         except Exception:
-            client.put_object(MINIO_BUCKET, key, io.BytesIO(b""), 0)
+            client.put_object(LANDING_ZONE_BUCKET, key, io.BytesIO(b""), 0)
     print("  Bucket and folder structure ready.")
 
 
@@ -759,7 +759,7 @@ def process_sound(client, sound, audio_np, query):
         wavfile.write(wav_tmp, SAMPLE_RATE, (audio_norm * 32767).astype(np.int16))
         audio_size = os.path.getsize(wav_tmp)
         with open(wav_tmp, "rb") as f:
-            client.put_object(MINIO_BUCKET, audio_key, f, audio_size, "audio/wav")
+            client.put_object(LANDING_ZONE_BUCKET, audio_key, f, audio_size, "audio/wav")
         os.remove(wav_tmp)
 
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
@@ -767,7 +767,7 @@ def process_sound(client, sound, audio_np, query):
         cv2.imwrite(img_tmp, img)
         image_size = os.path.getsize(img_tmp)
         with open(img_tmp, "rb") as f:
-            client.put_object(MINIO_BUCKET, image_key, f, image_size, "image/png")
+            client.put_object(LANDING_ZONE_BUCKET, image_key, f, image_size, "image/png")
         os.remove(img_tmp)
 
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
@@ -779,7 +779,7 @@ def process_sound(client, sound, audio_np, query):
         writer.release()
         video_size = os.path.getsize(vid_tmp)
         with open(vid_tmp, "rb") as f:
-            client.put_object(MINIO_BUCKET, video_key, f, video_size, "video/mp4")
+            client.put_object(LANDING_ZONE_BUCKET, video_key, f, video_size, "video/mp4")
         os.remove(vid_tmp)
     except Exception as e:
         print(f"    Upload failed: {e}")
@@ -912,7 +912,7 @@ def run(batch_size=10):
 
     # Append to shared CSV
     try:
-        resp = client.get_object(MINIO_BUCKET, METADATA_KEY)
+        resp = client.get_object(LANDING_ZONE_BUCKET, METADATA_KEY)
         existing = resp.read().decode("utf-8")
         resp.close(); resp.release_conn()
     except Exception:
@@ -937,7 +937,7 @@ def run(batch_size=10):
     writer.writeheader()
     writer.writerows(rows_list)
     csv_bytes = buf.getvalue().encode("utf-8")
-    client.put_object(MINIO_BUCKET, METADATA_KEY, io.BytesIO(csv_bytes), len(csv_bytes), "text/csv")
+    client.put_object(LANDING_ZONE_BUCKET, METADATA_KEY, io.BytesIO(csv_bytes), len(csv_bytes), "text/csv")
 
     print("\n  Cold-path ingestion complete.")
     print(f"   Batch: {len(rows)} sounds processed and stored.")

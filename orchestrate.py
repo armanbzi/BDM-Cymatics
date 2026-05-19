@@ -8,9 +8,11 @@ Interactive CLI that lets you choose which flow to run:
   2. Hot path           (producer + consumer in parallel)
   3. Cold path: Freesound  (batch Freesound ingestion)
   4. Cold path: ESC-50     (batch ESC-50 ingestion)
-  5. Trusted zone       (enrich all landing-zone audios)
-  6. Sync Delta Lake    (Parquet → Delta Lake)
-  7. SonarQube analysis (code quality scan + results)
+  5. Trusted zone       → trusted_zone/trusted_zone_processing.py
+  6. Exploitation zone  → exploitation_zone/exploitation_zone_processing.py
+  7. Sync Delta Lake    → shared/sync_delta.py (all zones)
+  8. SonarQube analysis (code quality scan + results)
+  9. Data consumption   (KPI queries on exploitation Delta)
 
 While a flow is running, live CPU / RAM / disk metrics are displayed
 every 2 seconds so you can monitor resource usage in real time.
@@ -78,9 +80,19 @@ FLOWS = {
         ],
     },
     "6": {
-        "name": "Sync Delta Lake",
+        "name": "Exploitation zone processing",
         "scripts": [
-            os.path.join(PROJECT_ROOT, "exploitation_zone", "sync_delta.py"),
+            os.path.join(
+                PROJECT_ROOT,
+                "exploitation_zone",
+                "exploitation_zone_processing.py",
+            ),
+        ],
+    },
+    "7": {
+        "name": "Sync all zones → Delta Lake",
+        "scripts": [
+            os.path.join(PROJECT_ROOT, "shared", "sync_delta.py"),
         ],
     },
 }
@@ -393,6 +405,74 @@ def run_sonarqube():
     print(f"{'─' * 62}\n")
 
 
+# ── data consumption ────────────────────────────────────────────────────────
+
+DISCOVER_KPIS_SCRIPT = os.path.join(
+    PROJECT_ROOT, "data_consumption", "tasks", "discover_kpis.py"
+)
+
+DATA_CONSUMPTION_TASKS = {
+    "1": {
+        "name": "Discover defined queries (KPIs)",
+        "script": DISCOVER_KPIS_SCRIPT,
+        "callable": "run_interactive",
+    },
+}
+
+
+def print_data_consumption_banner():
+    print(f"\n{'─' * 62}")
+    print("  Data consumption tasks")
+    print(f"{'─' * 62}")
+    for key in sorted(DATA_CONSUMPTION_TASKS.keys()):
+        print(f"   [{key}]  {DATA_CONSUMPTION_TASKS[key]['name']}")
+    print("   [b]  Back to main menu")
+    print()
+
+
+def run_data_consumption_menu():
+    """Sub-menu for exploitation-zone analytics and KPI discovery."""
+    while True:
+        print_data_consumption_banner()
+        try:
+            choice = input("  Select task [1, b]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Back to main menu.")
+            break
+
+        if choice in ("b", "q", ""):
+            break
+        if choice not in DATA_CONSUMPTION_TASKS:
+            print("  Invalid choice. Try again.")
+            continue
+
+        task = DATA_CONSUMPTION_TASKS[choice]
+        print(f"\n{'─' * 62}")
+        print(f"  {task['name']}")
+        print(f"{'─' * 62}\n")
+
+        script = task["script"]
+        if not os.path.isfile(script):
+            print(f"  Task script not found: {script}")
+            continue
+
+        if PROJECT_ROOT not in sys.path:
+            sys.path.insert(0, PROJECT_ROOT)
+
+        try:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location("discover_kpis", script)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"Cannot load task module from {script}")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            fn = getattr(mod, task["callable"])
+            fn(from_orchestrator=True)
+        except Exception as e:
+            print(f"  Task failed: {e}")
+
+
 # ── main menu ───────────────────────────────────────────────────────────────
 
 def print_banner():
@@ -404,7 +484,8 @@ def print_banner():
         flow = FLOWS[key]
         tag = " (parallel)" if flow.get("parallel") else ""
         print(f"   [{key}]  {flow['name']}{tag}")
-    print("   [7]  SonarQube code analysis")
+    print("   [8]  SonarQube code analysis")
+    print("   [9]  Data consumption tasks")
     print()
     print("   [q]  Quit")
     print()
@@ -488,7 +569,7 @@ def main():
     while True:
         print_banner()
         try:
-            choice = input("  Select flow [1-7, q]: ").strip().lower()
+            choice = input("  Select flow [1-9, q]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("\n  Bye!")
             break
@@ -496,8 +577,11 @@ def main():
         if choice == "q":
             print("  Bye!")
             break
-        if choice == "7":
+        if choice == "8":
             run_sonarqube()
+            continue
+        if choice == "9":
+            run_data_consumption_menu()
             continue
         if choice not in FLOWS:
             print("  Invalid choice. Try again.")

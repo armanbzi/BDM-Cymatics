@@ -35,9 +35,10 @@ import time
 from scipy.io import wavfile
 
 from shared.minio_helpers import (
-    MINIO_BUCKET, create_minio_client, ensure_bucket,
+    LANDING_ZONE_BUCKET, create_minio_client, ensure_bucket,
     METADATA_KEY, PARQUET_KEY, update_parquet, append_rows_to_csv,
 )
+from shared.sync_delta import sync_observations_to_delta
 from shared.freq_detection import (
     harmonic_dominant_freq, dominant_freq_hz_for_chunk,
     build_window_candidates,
@@ -57,6 +58,22 @@ except ImportError:
 #  Config
 # =============================================================================
 SOURCE = "warm-path"
+
+# Same 12 columns as cold-path metadata; warm-path leaves tags/description/category empty.
+LANDING_CSV_FIELDS = [
+    "uuid",
+    "source_id",
+    "time_recorded/added",
+    "duration",
+    "audio_size",
+    "audio_path",
+    "audio_format",
+    "source",
+    "peak_frequency_hz",
+    "tags",
+    "description",
+    "category",
+]
 PAUSE_MONITOR_FILE = os.path.join(tempfile.gettempdir(), ".cymatics_pause_monitor")
 
 DURATION = 5
@@ -75,7 +92,7 @@ def run():
         raise RuntimeError("Install minio: pip install minio")
 
     client = create_minio_client()
-    ensure_bucket(client, MINIO_BUCKET, ["metadata/.keep", "audio/warm-path/.keep"])
+    ensure_bucket(client, LANDING_ZONE_BUCKET, ["metadata/.keep", "audio/warm-path/.keep"])
 
     # --- Record 5 seconds ---
     print("\n  Get ready to record...")
@@ -201,7 +218,7 @@ def run():
     wavfile.write(wav_path, SAMPLE_RATE, (audio * 32767).astype(np.int16))
     audio_size = os.path.getsize(wav_path)
     with open(wav_path, "rb") as f:
-        client.put_object(MINIO_BUCKET, audio_key, f, audio_size, "audio/wav")
+        client.put_object(LANDING_ZONE_BUCKET, audio_key, f, audio_size, "audio/wav")
     os.remove(wav_path)
     print(f"  Uploaded: {audio_key}")
 
@@ -215,12 +232,18 @@ def run():
         "audio_format": "wav",
         "source": SOURCE,
         "peak_frequency_hz": dominant_freq_hz,
+        "tags": "",
+        "description": "",
+        "category": "",
     }
 
-    append_rows_to_csv(client, MINIO_BUCKET, [row])
+    append_rows_to_csv(
+        client, LANDING_ZONE_BUCKET, [row], priority_fields=LANDING_CSV_FIELDS
+    )
     print(f"  Updated: {METADATA_KEY}")
 
-    update_parquet(client, MINIO_BUCKET, [row])
+    update_parquet(client, LANDING_ZONE_BUCKET, [row])
+    sync_observations_to_delta(client, LANDING_ZONE_BUCKET, zone_label="landing")
 
     print("\n  Observation stored in MinIO.")
     print(f"   UUID: {obs_id}")

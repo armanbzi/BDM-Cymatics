@@ -4,12 +4,14 @@ Landing Zone — hot-path consumer.
 
 Consumes Kafka messages (audio_path, bucket, timestamp, sample_rate, device),
 downloads raw audio from MinIO, detects peak frequency (harmonic-aware),
-moves audio from  audio/hot-path/raw/<uuid>.wav
-            to    audio/hot-path/<peak_freq>/<uuid>-<peak_freq>.wav,
-deletes the raw copy, and appends a metadata row to CSV + Parquet.
+moves audio from  audio/hot-path/raw/<capture_id>.wav
+            to    audio/hot-path/<peak_freq>/<capture_id>-<peak_freq>.wav,
+deletes the raw copy, and appends a structured metadata row to CSV + Parquet.
 
-Cymatics generation, spectral features, happen
-later in the trusted-zone.
+device and time_recorded/added from Kafka are merged in trusted-zone Spark
+(see spark_trusted_zone.py), not here.
+
+Cymatics generation, spectral features, happen later in the trusted-zone.
 """
 
 import os
@@ -17,9 +19,8 @@ import sys
 import io
 import json
 import time
-import uuid
-from io import BytesIO
 from datetime import datetime, timezone
+from io import BytesIO
 
 _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if _project_root not in sys.path:
@@ -35,9 +36,10 @@ from minio import Minio
 from minio.commonconfig import CopySource
 
 from shared.minio_helpers import (
-    MINIO_BUCKET, create_minio_client, ensure_bucket,
+    LANDING_ZONE_BUCKET, create_minio_client, ensure_bucket,
     METADATA_KEY, update_parquet, append_rows_to_csv,
 )
+from shared.sync_delta import sync_observations_to_delta
 from shared.freq_detection import detect_peak_freq
 
 try:
@@ -58,11 +60,42 @@ KAFKA_TOPIC_HOT = os.environ.get("KAFKA_TOPIC_HOT", "landing-zone-events-hot-pat
 SOURCE = "hot-path"
 SAMPLE_RATE = 44100
 
+# Same 12 columns as cold-path metadata; hot-path leaves tags/description/category empty.
+LANDING_CSV_FIELDS = [
+    "uuid",
+    "source_id",
+    "time_recorded/added",
+    "duration",
+    "audio_size",
+    "audio_path",
+    "audio_format",
+    "source",
+    "peak_frequency_hz",
+    "tags",
+    "description",
+    "category",
+]
+
+
+def capture_id_from_raw_path(raw_audio_path: str) -> str:
+    """UUID stem from producer path audio/hot-path/raw/<capture_id>.wav."""
+    name = raw_audio_path.rstrip("/").rsplit("/", 1)[-1]
+    if name.lower().endswith(".wav"):
+        return name[:-4]
+    return name
+
 
 # =============================================================================
 #  Message processing
 # =============================================================================
-def process_message(client, audio, raw_audio_path, raw_bucket, sample_rate):
+def process_message(
+    client,
+    audio,
+    raw_audio_path,
+    raw_bucket,
+    sample_rate,
+    time_recorded=None,
+):
     """Download audio, detect peak freq, move to structured path, write metadata."""
     audio = np.asarray(audio, dtype=np.float64).flatten()
     if len(audio) < sample_rate:
@@ -73,29 +106,32 @@ def process_message(client, audio, raw_audio_path, raw_bucket, sample_rate):
         return False
     peak_freq_int = int(round(peak_freq))
 
-    obs_id = str(uuid.uuid4())
-    ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    obs_id = capture_id_from_raw_path(raw_audio_path)
     audio_path = f"audio/{SOURCE}/{peak_freq_int}/{obs_id}-{peak_freq_int}.wav"
     audio_duration_s = float(len(audio) / sample_rate)
 
     try:
         client.copy_object(
-            MINIO_BUCKET,
+            LANDING_ZONE_BUCKET,
             audio_path,
             CopySource(raw_bucket, raw_audio_path),
         )
         client.remove_object(raw_bucket, raw_audio_path)
-        audio_size = int(client.stat_object(MINIO_BUCKET, audio_path).size)
+        audio_size = int(client.stat_object(LANDING_ZONE_BUCKET, audio_path).size)
     except Exception:
         wav_buf = BytesIO()
         wavfile.write(wav_buf, sample_rate, (audio * 32767).astype(np.int16))
         audio_size = wav_buf.getbuffer().nbytes
         wav_buf.seek(0)
-        client.put_object(MINIO_BUCKET, audio_path, wav_buf, audio_size, "audio/wav")
+        client.put_object(LANDING_ZONE_BUCKET, audio_path, wav_buf, audio_size, "audio/wav")
         try:
             client.remove_object(raw_bucket, raw_audio_path)
         except Exception:
             pass
+
+    ts = (time_recorded or "").strip() or datetime.now(timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
 
     row = {
         "uuid": obs_id,
@@ -107,10 +143,16 @@ def process_message(client, audio, raw_audio_path, raw_bucket, sample_rate):
         "audio_format": "wav",
         "source": SOURCE,
         "peak_frequency_hz": peak_freq,
+        "tags": "",
+        "description": "",
+        "category": "",
     }
 
-    append_rows_to_csv(client, MINIO_BUCKET, [row])
-    update_parquet(client, MINIO_BUCKET, [row])
+    append_rows_to_csv(
+        client, LANDING_ZONE_BUCKET, [row], priority_fields=LANDING_CSV_FIELDS
+    )
+    update_parquet(client, LANDING_ZONE_BUCKET, [row])
+    sync_observations_to_delta(client, LANDING_ZONE_BUCKET, zone_label="landing")
 
     print(f"  [hot] {peak_freq_int} Hz  obs_id={obs_id[:8]}...  → {audio_path}")
     return True
@@ -124,7 +166,7 @@ def run():
         raise RuntimeError("Install kafka-python: pip install kafka-python")
 
     client = create_minio_client()
-    ensure_bucket(client, MINIO_BUCKET, ["metadata/.keep", "audio/hot-path/.keep"])
+    ensure_bucket(client, LANDING_ZONE_BUCKET, ["metadata/.keep", "audio/hot-path/.keep"])
 
     servers = KAFKA_BOOTSTRAP_SERVERS.split(",")
 
@@ -194,7 +236,14 @@ def run():
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
 
-            ok = process_message(client, audio, raw_audio_path=raw_path, raw_bucket=bucket, sample_rate=sr)
+            ok = process_message(
+                client,
+                audio,
+                raw_audio_path=raw_path,
+                raw_bucket=bucket,
+                sample_rate=sr,
+                time_recorded=value.get("timestamp"),
+            )
             if ok:
                 processed_raw_paths.add(raw_path)
                 commit_message(message)

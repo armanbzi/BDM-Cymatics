@@ -2,18 +2,24 @@
 """
 Trusted Zone — Processing stage.
 
-Reads all audio records from the landing-zone metadata (CSV/Parquet),
-skips records already processed in the trusted-zone, then for each new record:
+Batch path (Apache Spark): landing-zone metadata CSV is loaded in Spark for
+information-preserving QA between Landing and Trusted — trim fields, drop
+invalid rows, deduplicate on uuid, anti-join rows already present in trusted
+metadata in Docker (`docker compose run --rm trusted-spark-batch`), which also
+merges hot-path Kafka JSON from `landing-zone/metadata/kafka-events/hot-path/`
+(device, timestamp → time_recorded/added), then loads `metadata/pending_workset.json`.
+
+Then for each pending record:
 
   1. Downloads the raw audio from the landing-zone bucket.
-  2. Computes spectral features (centroid, bandwidth, rolloff, flatness,
-     MFCCs, spectral entropy, ZCR, loudness, signal energy, harmonic ratio).
-  3. Generates a cymatics image (2048×2048) and video (600×600 @ 30 fps).
-  4. Uploads audio, image, and video to the trusted-zone bucket with structure:
+  2. Generates a cymatics image (2048×2048) and video (600×600 @ 30 fps).
+  3. Uploads audio, image, and video to the trusted-zone bucket with structure:
        audio/<peak_freq>/<uuid>-<peak_freq>.wav
        images/<peak_freq>/<uuid>-<peak_freq>.png
        videos/<peak_freq>/<uuid>-<peak_freq>.mp4
-  5. Appends enriched metadata to trusted-zone CSV + Parquet.
+  4. Appends cymatics + peak metadata to trusted-zone CSV + Parquet.
+
+Spectral / MFCC features are derived later in exploitation_zone (Spark + Python).
 
 No path-based subfolders (warm/hot/cold) 
 
@@ -22,17 +28,17 @@ No path-based subfolders (warm/hot/cold)
 import os
 import sys
 import io
-import csv
 import json
 import tempfile
 import time
-import uuid as uuid_mod
 from io import BytesIO
-from datetime import datetime, timezone
 
 _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
+_tz_dir = os.path.abspath(os.path.dirname(__file__))
+if _tz_dir not in sys.path:
+    sys.path.insert(1, _tz_dir)
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -41,15 +47,19 @@ import numpy as np
 import cv2
 from scipy.signal import find_peaks
 from scipy.io import wavfile
-from scipy.fft import dct
+from minio.commonconfig import CopySource
 
-from minio import Minio
-
+from shared.sync_delta import sync_observations_to_delta
 from shared.minio_helpers import (
-    MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_SECURE,
-    MINIO_BUCKET, create_minio_client, ensure_bucket,
-    update_parquet, append_rows_to_csv, read_csv_from_minio,
-    merge_metadata_fieldnames,
+    MINIO_ENDPOINT,
+    MINIO_ACCESS_KEY,
+    MINIO_SECRET_KEY,
+    LANDING_ZONE_BUCKET,
+    create_minio_client,
+    ensure_bucket,
+    update_parquet,
+    append_rows_to_csv,
+    is_unreachable_minio,
 )
 from shared.freq_detection import (
     harmonic_dominant_freq, dominant_freq_hz_for_chunk,
@@ -59,11 +69,15 @@ from shared.cymatics_engine import (
     N_ZONES, build_zones, build_zone_sources, analyse_frame,
     compute_interference, displacement_to_brightness, render_composite,
 )
+from spark_trusted_zone import (
+    load_pending_workset,
+    run_spark_trusted_zone_subprocess,
+)
 
 # =============================================================================
 #  Config
 # =============================================================================
-LANDING_BUCKET = MINIO_BUCKET
+LANDING_BUCKET = LANDING_ZONE_BUCKET
 TRUSTED_BUCKET = os.environ.get("TRUSTED_ZONE_BUCKET", "trusted-zone")
 
 LANDING_META_KEY = "metadata/observations.csv"
@@ -82,137 +96,16 @@ IMG_SIM = 900
 
 TRUSTED_METADATA_FIELDS = [
     "uuid", "source_id", "time_recorded/added", "processing_version",
-    "duration", "spectral_centroid_hz", "spectral_bandwidth_hz",
-    "spectral_rolloff_hz", "spectral_flatness", "MFCCs",
-    "spectral_entropy", "zero_crossing_rate", "signal_energy",
-    "harmonic_energy_ratio", "symmetry_score", "pattern_stability_score",
+    "duration",
+    "symmetry_score", "pattern_stability_score",
     "image_resolution", "video_resolution",
     "audio_size", "image_size", "video_size",
-    "processing_time(seconds)", "device", "audio_format", "loudness",
+    "processing_time(seconds)", "device", "audio_format",
     "source", "peak_frequency_hz", "peak_time_s", "peak_amplitude",
     "peak_rms", "audio_path", "image_path", "video_path",
     "all_peak_frequencies_hz",
     "tags", "description", "category",
 ]
-
-
-# =============================================================================
-#  Spectral feature functions
-# =============================================================================
-def spectral_features_hz(audio, sample_rate=SAMPLE_RATE):
-    x = np.asarray(audio, dtype=np.float64).flatten()
-    n = len(x)
-    if n < 2:
-        return 0.0, 0.0, 0.0, 0.0, 0.0
-    mag = np.abs(np.fft.rfft(x)) + 1e-20
-    freqs = np.fft.rfftfreq(n, 1.0 / sample_rate)
-    p = mag ** 2
-    s = float(p.sum()) + 1e-20
-    centroid = float((freqs * p).sum() / s)
-    bandwidth = float(np.sqrt(((freqs - centroid) ** 2 * p).sum() / s))
-    cum = np.cumsum(p)
-    rolloff_idx = int(np.searchsorted(cum, 0.85 * s))
-    rolloff = float(freqs[min(rolloff_idx, len(freqs) - 1)])
-    geo = float(np.exp(np.mean(np.log(mag))))
-    arith = float(np.mean(mag))
-    flatness = float(geo / (arith + 1e-20))
-    signal_energy = float(np.sum(x ** 2))
-    return centroid, bandwidth, rolloff, flatness, signal_energy
-
-
-def _hz_to_mel(f):
-    return 2595.0 * np.log10(1.0 + np.maximum(f, 0.0) / 700.0)
-
-
-def _mel_to_hz(m):
-    return 700.0 * (10.0 ** (m / 2595.0) - 1.0)
-
-
-def _mel_filterbank(n_fft, n_mels, sample_rate):
-    n_freqs = n_fft // 2 + 1
-    mel_min, mel_max = _hz_to_mel(0.0), _hz_to_mel(sample_rate / 2.0)
-    mels = np.linspace(mel_min, mel_max, n_mels + 2)
-    hz = _mel_to_hz(mels)
-    bins = np.floor((n_fft + 1) * hz / sample_rate).astype(int)
-    bins = np.clip(bins, 0, n_freqs - 1)
-    fbank = np.zeros((n_mels, n_freqs), dtype=np.float64)
-    for m in range(1, n_mels + 1):
-        left, center, right = int(bins[m - 1]), int(bins[m]), int(bins[m + 1])
-        if center > left:
-            for k in range(left, center):
-                fbank[m - 1, k] = (k - left) / float(center - left)
-        if right > center:
-            for k in range(center, right):
-                fbank[m - 1, k] = (right - k) / float(right - center)
-    return fbank
-
-
-def mfccs_mean_json(audio, sample_rate=SAMPLE_RATE, n_mfcc=13, n_fft=2048, hop_length=None, n_mels=40):
-    x = np.asarray(audio, dtype=np.float64).flatten()
-    if hop_length is None:
-        hop_length = max(n_fft // 4, 1)
-    if len(x) < n_fft:
-        return json.dumps([0.0] * n_mfcc)
-    win = np.hanning(n_fft)
-    fbank = _mel_filterbank(n_fft, n_mels, sample_rate)
-    n_frames = 1 + (len(x) - n_fft) // hop_length
-    if n_frames < 1:
-        return json.dumps([0.0] * n_mfcc)
-    mfcc_acc = np.zeros(n_mfcc, dtype=np.float64)
-    for i in range(n_frames):
-        frame = x[i * hop_length : i * hop_length + n_fft] * win
-        spec = np.abs(np.fft.rfft(frame, n=n_fft)) ** 2
-        mel = np.maximum(np.dot(fbank, spec), 1e-10)
-        log_mel = np.log(mel)
-        coeffs = dct(log_mel, type=2, norm="ortho")[:n_mfcc]
-        mfcc_acc += coeffs
-    mean_mfcc = mfcc_acc / n_frames
-    return json.dumps([round(float(v), 6) for v in mean_mfcc])
-
-
-def spectral_entropy_nats(audio, sample_rate=SAMPLE_RATE):
-    x = np.asarray(audio, dtype=np.float64).flatten()
-    if len(x) < 2:
-        return 0.0
-    power = np.abs(np.fft.rfft(x)) ** 2
-    p = power / (np.sum(power) + 1e-20)
-    p = p[p > 1e-20]
-    return float(-np.sum(p * np.log(p)))
-
-
-def zero_crossing_rate(audio):
-    x = np.asarray(audio, dtype=np.float64).flatten()
-    n = len(x)
-    if n < 2:
-        return 0.0
-    signs = np.sign(x)
-    signs[signs == 0] = 1.0
-    return float(np.sum(np.abs(np.diff(signs)) > 0) / (n - 1))
-
-
-def loudness_db(audio):
-    rms = float(np.sqrt(np.mean(np.asarray(audio, dtype=np.float64) ** 2)))
-    return float(20.0 * np.log10(rms + 1e-20))
-
-
-def harmonic_energy_ratio(audio, sample_rate, fundamental_hz, max_harmonics=8, half_width_hz=None):
-    x = np.asarray(audio, dtype=np.float64).flatten()
-    n = len(x)
-    if n < 2 or fundamental_hz <= 0:
-        return 0.0
-    power = np.abs(np.fft.rfft(x)) ** 2
-    freqs = np.fft.rfftfreq(n, 1.0 / sample_rate)
-    total = float(power.sum()) + 1e-20
-    if half_width_hz is None:
-        half_width_hz = max(sample_rate / n * 2.0, 5.0)
-    h_sum = 0.0
-    for k in range(1, max_harmonics + 1):
-        fk = fundamental_hz * k
-        if fk >= sample_rate / 2:
-            break
-        mask = np.abs(freqs - fk) <= half_width_hz
-        h_sum += float(power[mask].sum())
-    return float(h_sum / total)
 
 
 # =============================================================================
@@ -251,24 +144,6 @@ def ensure_trusted_bucket(client):
     print(f"  Trusted-zone bucket ready: {TRUSTED_BUCKET}")
 
 
-def load_landing_metadata(client):
-    """Read landing-zone CSV and return list of row dicts."""
-    data = read_csv_from_minio(client, LANDING_BUCKET, LANDING_META_KEY)
-    if not data:
-        return []
-    reader = csv.DictReader(io.StringIO(data))
-    return list(reader)
-
-
-def load_trusted_uuids(client):
-    """Return set of uuid strings already in trusted-zone metadata."""
-    data = read_csv_from_minio(client, TRUSTED_BUCKET, TRUSTED_META_KEY)
-    if not data:
-        return set()
-    reader = csv.DictReader(io.StringIO(data))
-    return {row.get("uuid", "").strip() for row in reader if row.get("uuid", "").strip()}
-
-
 def download_audio_from_landing(client, audio_path):
     """Download audio from landing-zone and return (sample_rate, audio_float64)."""
     resp = client.get_object(LANDING_BUCKET, audio_path)
@@ -288,7 +163,7 @@ def download_audio_from_landing(client, audio_path):
 #  Process a single record
 # =============================================================================
 def process_record(client, landing_row):
-    """Full enrichment: spectral features + cymatics image/video generation."""
+    """Cymatics image/video generation + peak metadata (features → exploitation zone)."""
     t_start = time.perf_counter()
     rec_uuid = landing_row.get("uuid", "")
     source_id = landing_row.get("source_id", rec_uuid)
@@ -364,14 +239,6 @@ def process_record(client, landing_row):
     window_len = int(sr * 0.25)
     freq_resolution = sr / window_len
     peak_hz_values = peaks_idx * freq_resolution
-
-    # --- Spectral features ---
-    sc_hz, sbw_hz, srol_hz, sflat, signal_energy = spectral_features_hz(audio, sr)
-    harm_ratio = harmonic_energy_ratio(audio, sr, dominant_freq_hz)
-    mfccs_json = mfccs_mean_json(audio, sr)
-    spec_entropy = spectral_entropy_nats(audio, sr)
-    zcr = zero_crossing_rate(audio)
-    loud = loudness_db(audio)
 
     # --- Cymatics: video ---
     vz = build_zones(SIM_RES)
@@ -481,7 +348,6 @@ def process_record(client, landing_row):
 
     try:
         try:
-            from minio.commonconfig import CopySource
             client.copy_object(
                 TRUSTED_BUCKET, audio_key,
                 CopySource(LANDING_BUCKET, audio_path_landing),
@@ -526,15 +392,6 @@ def process_record(client, landing_row):
         "time_recorded/added": time_recorded_added,
         "processing_version": PROCESSING_VERSION,
         "duration": audio_duration_s,
-        "spectral_centroid_hz": sc_hz,
-        "spectral_bandwidth_hz": sbw_hz,
-        "spectral_rolloff_hz": srol_hz,
-        "spectral_flatness": sflat,
-        "MFCCs": mfccs_json,
-        "spectral_entropy": spec_entropy,
-        "zero_crossing_rate": zcr,
-        "signal_energy": signal_energy,
-        "harmonic_energy_ratio": harm_ratio,
         "symmetry_score": sym_score,
         "pattern_stability_score": pat_stability,
         "image_resolution": f"{IMG_RES}x{IMG_RES}",
@@ -545,7 +402,6 @@ def process_record(client, landing_row):
         "processing_time(seconds)": processing_time_s,
         "device": device,
         "audio_format": audio_format,
-        "loudness": loud,
         "source": source,
         "peak_frequency_hz": dominant_freq_hz,
         "peak_time_s": peak_time,
@@ -570,24 +426,60 @@ def run():
         raise RuntimeError("Set MINIO_ACCESS_KEY and MINIO_SECRET_KEY")
 
     client = create_minio_client()
-    ensure_trusted_bucket(client)
+    try:
+        ensure_trusted_bucket(client)
+    except Exception as e:
+        from minio.error import S3Error
 
-    print("\n[1/3] Reading landing-zone metadata...")
-    landing_records = load_landing_metadata(client)
-    if not landing_records:
-        print("  No records found in landing-zone metadata.")
-        return
+        if is_unreachable_minio(e):
+            raise RuntimeError(
+                f"MinIO at {MINIO_ENDPOINT!r} is unreachable while preparing trusted bucket "
+                f"{TRUSTED_BUCKET!r}. Start MinIO and check MINIO_ENDPOINT, MINIO_SECURE, and credentials."
+            ) from e
+        if isinstance(e, S3Error):
+            code = getattr(e, "code", "") or ""
+            raise RuntimeError(
+                f"Cannot create or access trusted bucket {TRUSTED_BUCKET!r} (MinIO code={code}). "
+                "Adjust TRUSTED_ZONE_BUCKET or MinIO user policy."
+            ) from e
+        raise RuntimeError(
+            f"Trusted bucket setup failed for {TRUSTED_BUCKET!r}: {e}"
+        ) from e
 
-    print(f"  Found {len(landing_records)} records in landing-zone.")
-
-    existing_uuids = load_trusted_uuids(client)
-    if existing_uuids:
-        print(f"  {len(existing_uuids)} records already in trusted-zone — will be skipped.")
-
-    pending = [r for r in landing_records if r.get("uuid", "").strip() not in existing_uuids]
+    print("\n[1/3] Spark batch (Docker): landing-zone metadata → pending trusted workset...")
+    try:
+        run_spark_trusted_zone_subprocess(project_root=_project_root)
+        pending = load_pending_workset(client, bucket=TRUSTED_BUCKET)
+    except Exception as e:
+        low = repr(e).lower()
+        msg = str(e)
+        hint = ""
+        if "metadata batch container failed" in msg.lower():
+            hint = (
+                " Start the stack from the repo root: docker compose up -d, "
+                "then retry. Inspect trusted-spark-batch logs for S3A or Spark master errors."
+            )
+        elif is_unreachable_minio(e) or "cannot reach minio" in msg.lower():
+            hint = " MinIO must be up before loading the pending workset (MINIO_ENDPOINT on the host)."
+        elif "pending workset missing" in msg.lower():
+            hint = (
+                " The Spark container may have exited before writing metadata/pending_workset.json."
+            )
+        elif ("connection refused" in low or "could not connect" in low) and (
+            "docker" in low or "daemon" in low
+        ):
+            hint = " Start Docker Desktop and run from the repo root: docker compose up -d."
+        raise RuntimeError(
+            "Trusted-zone Spark batch failed — " + str(e) + hint
+        ) from e
     if not pending:
-        print("  All records already processed. Nothing to do.")
+        print(
+            "  No pending records — empty landing metadata, invalid rows filtered out,"
+            " or all UUIDs already in trusted-zone.",
+        )
         return
+
+    print(f"  Pending rows after Spark metadata batch: {len(pending)}")
 
     by_source = {}
     for r in pending:
@@ -617,6 +509,9 @@ def run():
     print(f"  Updated: {TRUSTED_META_KEY}")
 
     update_parquet(client, TRUSTED_BUCKET, rows)
+
+    print("\n[4/4] Syncing Parquet → Delta Lake...")
+    sync_observations_to_delta(client, TRUSTED_BUCKET, zone_label="trusted")
 
     print("\n  Trusted-zone processing complete.")
     print(f"   Processed: {len(rows)} records")
