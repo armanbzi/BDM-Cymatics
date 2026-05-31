@@ -14,6 +14,12 @@ MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "")
 MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
+
+# Role-based credentials (set in .env after applying data security policies).
+MINIO_PIPELINE_ACCESS_KEY = os.environ.get("MINIO_PIPELINE_ACCESS_KEY", "") or MINIO_ACCESS_KEY
+MINIO_PIPELINE_SECRET_KEY = os.environ.get("MINIO_PIPELINE_SECRET_KEY", "") or MINIO_SECRET_KEY
+MINIO_ANALYST_ACCESS_KEY = os.environ.get("MINIO_ANALYST_ACCESS_KEY", "") or MINIO_ACCESS_KEY
+MINIO_ANALYST_SECRET_KEY = os.environ.get("MINIO_ANALYST_SECRET_KEY", "") or MINIO_SECRET_KEY
 LANDING_ZONE_BUCKET = (
     os.environ.get("LANDING_ZONE_BUCKET", "landing-zone").strip() or "landing-zone"
 )
@@ -35,10 +41,21 @@ LANDING_METADATA_FIELDS = [
 
 
 def create_minio_client():
+    """Pipeline client (RW) — uses pipeline_admin credentials for processing."""
     return Minio(
         MINIO_ENDPOINT,
-        access_key=MINIO_ACCESS_KEY,
-        secret_key=MINIO_SECRET_KEY,
+        access_key=MINIO_PIPELINE_ACCESS_KEY,
+        secret_key=MINIO_PIPELINE_SECRET_KEY,
+        secure=MINIO_SECURE,
+    )
+
+
+def create_minio_client_readonly():
+    """Read-only client — uses analyst credentials for data consumption."""
+    return Minio(
+        MINIO_ENDPOINT,
+        access_key=MINIO_ANALYST_ACCESS_KEY,
+        secret_key=MINIO_ANALYST_SECRET_KEY,
         secure=MINIO_SECURE,
     )
 

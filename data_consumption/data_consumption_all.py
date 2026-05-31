@@ -90,6 +90,23 @@ def _try_load_data():
         st.stop()
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _image_path_map() -> dict[str, str]:
+    """Build UUID → image_path lookup from exploitation observations."""
+    try:
+        obs, _, _ = _load_data()
+        if "image_path" in obs.columns and "uuid" in obs.columns:
+            return dict(
+                zip(
+                    obs["uuid"].astype(str),
+                    obs["image_path"].fillna("").astype(str),
+                )
+            )
+    except Exception:
+        pass
+    return {}
+
+
 # ── KPI chart renderers ───────────────────────────────────────────────────
 
 
@@ -563,6 +580,8 @@ def _render_audio_classification() -> None:
         st.success(f"Found {len(results)} similar recording(s).")
         st.divider()
 
+        img_map = _image_path_map()
+
         # ── Results ───────────────────────────────────────────────
         for i, hit in enumerate(results):
             entity = hit["entity"]
@@ -573,23 +592,33 @@ def _render_audio_classification() -> None:
             source = entity.get("source", "") or "—"
             peak_hz = entity.get("peak_frequency_hz", 0)
             symmetry = entity.get("symmetry_score", 0)
+            image_path = img_map.get(uuid, "")
 
             with st.container():
-                cols = st.columns([1, 3, 2, 2, 2])
-                cols[0].metric("Rank", f"#{i + 1}")
-                cols[1].metric("Category", category)
-                cols[2].metric("Similarity", f"{distance:.4f}")
-                cols[3].metric("Peak freq", f"{peak_hz:.0f} Hz")
-                cols[4].metric("Symmetry", f"{symmetry:.3f}")
+                col_img, col_info = st.columns([1, 2])
 
-                with st.expander(f"Details — {uuid[:12]}…"):
-                    st.markdown(
-                        f"- **UUID:** `{uuid}`\n"
-                        f"- **Source:** {source}\n"
-                        f"- **Peak frequency:** {peak_hz:.1f} Hz\n"
-                        f"- **Symmetry score:** {symmetry:.3f}\n"
-                        f"- **Cosine similarity:** {distance:.6f}"
-                    )
+                with col_img:
+                    img_data = _load_cymatics_image(image_path)
+                    if img_data is not None:
+                        st.image(img_data, caption=f"#{i + 1} — {category}", width=280)
+                    else:
+                        st.markdown(f"**#{i + 1}** — *image not available*")
+
+                with col_info:
+                    m_cols = st.columns([2, 2, 2])
+                    m_cols[0].metric("Category", category)
+                    m_cols[1].metric("Similarity", f"{distance:.4f}")
+                    m_cols[2].metric("Peak freq", f"{peak_hz:.0f} Hz")
+
+                    with st.expander(f"Details — {uuid[:12]}…"):
+                        st.markdown(
+                            f"- **UUID:** `{uuid}`\n"
+                            f"- **Source:** {source}\n"
+                            f"- **Peak frequency:** {peak_hz:.1f} Hz\n"
+                            f"- **Symmetry score:** {symmetry:.3f}\n"
+                            f"- **Image path:** `{image_path}`\n"
+                            f"- **Cosine similarity:** {distance:.6f}"
+                        )
 
             if i < len(results) - 1:
                 st.divider()
@@ -601,15 +630,18 @@ def _render_audio_classification() -> None:
 def _load_cymatics_image(image_path: str) -> bytes | None:
     """Fetch a cymatics PNG from the trusted-zone MinIO bucket.
 
+    Uses analyst (read-only) credentials so data-consumption tasks
+    never hold write access to upstream zones.
+
     Returns raw PNG bytes, or *None* if the image cannot be loaded.
     """
     if not image_path or image_path == "—":
         return None
     try:
-        from shared.minio_helpers import create_minio_client
+        from shared.minio_helpers import create_minio_client_readonly
 
         bucket = os.environ.get("TRUSTED_ZONE_BUCKET", "trusted-zone")
-        client = create_minio_client()
+        client = create_minio_client_readonly()
         resp = client.get_object(bucket, image_path)
         data = resp.read()
         resp.close()
@@ -916,6 +948,8 @@ def _render_metadata_search() -> None:
         st.success(f"Found {len(results)} matching recording(s).")
         st.divider()
 
+        img_map = _image_path_map()
+
         for i, hit in enumerate(results):
             entity = hit["entity"]
             distance = hit["distance"]
@@ -925,23 +959,34 @@ def _render_metadata_search() -> None:
             source = entity.get("source", "") or "—"
             peak_hz = entity.get("peak_frequency_hz", 0)
             description = entity.get("description_text", "") or "—"
+            image_path = img_map.get(uuid, "")
 
             with st.container():
-                cols = st.columns([1, 3, 2, 2])
-                cols[0].metric("Rank", f"#{i + 1}")
-                cols[1].metric("Category", category)
-                cols[2].metric("Similarity", f"{distance:.4f}")
-                cols[3].metric("Peak freq", f"{peak_hz:.0f} Hz")
+                col_img, col_info = st.columns([1, 2])
 
-                with st.expander(f"Description — {uuid[:12]}…"):
-                    st.markdown(f"**{category}** — {source}")
-                    st.info(description)
-                    st.markdown(
-                        f"- **UUID:** `{uuid}`\n"
-                        f"- **Source:** {source}\n"
-                        f"- **Peak frequency:** {peak_hz:.1f} Hz\n"
-                        f"- **Cosine similarity:** {distance:.6f}"
-                    )
+                with col_img:
+                    img_data = _load_cymatics_image(image_path)
+                    if img_data is not None:
+                        st.image(img_data, caption=f"#{i + 1} — {category}", width=280)
+                    else:
+                        st.markdown(f"**#{i + 1}** — *image not available*")
+
+                with col_info:
+                    m_cols = st.columns([2, 2, 2])
+                    m_cols[0].metric("Category", category)
+                    m_cols[1].metric("Similarity", f"{distance:.4f}")
+                    m_cols[2].metric("Peak freq", f"{peak_hz:.0f} Hz")
+
+                    with st.expander(f"Description — {uuid[:12]}…"):
+                        st.markdown(f"**{category}** — {source}")
+                        st.info(description)
+                        st.markdown(
+                            f"- **UUID:** `{uuid}`\n"
+                            f"- **Source:** {source}\n"
+                            f"- **Peak frequency:** {peak_hz:.1f} Hz\n"
+                            f"- **Image path:** `{image_path}`\n"
+                            f"- **Cosine similarity:** {distance:.6f}"
+                        )
 
             if i < len(results) - 1:
                 st.divider()
@@ -951,16 +996,16 @@ def _render_metadata_search() -> None:
 
 
 def _render_governance() -> None:
-    """Data governance tab — quality checks and lineage tracking."""
+    """Data governance tab — quality checks, lineage tracking, and data security."""
     st.subheader("Data Governance")
     st.caption(
         "File integrity and completeness checks via Great Expectations, "
-        "plus cross-zone lineage tracking for every record."
+        "cross-zone lineage tracking, and MinIO role-based access control."
     )
 
     mode = st.radio(
         "Governance task",
-        options=["Quality Checks", "Lineage Tracking"],
+        options=["Quality Checks", "Lineage Tracking", "Data Security"],
         horizontal=True,
         key="gov_mode",
     )
@@ -1031,10 +1076,42 @@ def _render_governance() -> None:
                     f = check["failed"]
                     total = p + f
                     name = check["name"]
+                    failed_recs = check.get("failed_records", [])
+
                     if f == 0:
                         st.markdown(f"- ✓ **{name}** — {p}/{total} passed")
                     else:
-                        st.markdown(f"- ✗ **{name}** — {p}/{total} passed, {f} failed")
+                        st.markdown(
+                            f"- ✗ **{name}** — {p}/{total} passed, "
+                            f"{f} failed"
+                        )
+                        if failed_recs:
+                            with st.expander(
+                                f"Show {len(failed_recs)} failing record(s)"
+                            ):
+                                for rec in failed_recs:
+                                    uid = rec.get("uuid", "?")
+                                    val = rec.get("value", "")
+                                    cat = rec.get("category", "")
+                                    src = rec.get("source", "")
+                                    path = rec.get("path", "")
+                                    reason = rec.get("reason", "")
+
+                                    parts = [f"**UUID:** `{uid}`"]
+                                    if cat:
+                                        parts.append(f"**Category:** {cat}")
+                                    if src:
+                                        parts.append(f"**Source:** {src}")
+                                    if val != "":
+                                        parts.append(f"**Value:** `{val}`")
+                                    if path:
+                                        parts.append(f"**Path:** `{path}`")
+                                    if reason:
+                                        parts.append(f"**Reason:** {reason}")
+
+                                    st.markdown(
+                                        " &nbsp;|&nbsp; ".join(parts)
+                                    )
 
                 st.divider()
 
@@ -1048,7 +1125,7 @@ def _render_governance() -> None:
                     f"{total_pass}/{total_pass + total_fail} passed."
                 )
 
-    else:
+    elif mode == "Lineage Tracking":
         st.markdown(
             "Traces every record (UUID) across all pipeline zones: "
             "Landing → Trusted → Exploitation → Milvus embeddings."
@@ -1151,6 +1228,141 @@ def _render_governance() -> None:
 
             if total > show_count:
                 st.info(f"Showing first {show_count} of {total} records.")
+
+    else:
+        # Data Security mode.
+        st.markdown(
+            "Role-based access control for MinIO pipeline zones. "
+            "Creates IAM users and attaches policies per role."
+        )
+
+        # Show access matrix.
+        st.markdown("#### Access Control Matrix")
+        matrix_data = {
+            "Role": ["pipeline_admin", "data_engineer", "data_scientist", "analyst"],
+            "Landing": ["RW", "RW", "—", "R"],
+            "Trusted": ["RW", "RW", "R", "R"],
+            "Exploitation": ["RW", "R", "RW", "R"],
+        }
+        st.table(pd.DataFrame(matrix_data).set_index("Role"))
+
+        col_apply, col_verify = st.columns(2)
+
+        with col_apply:
+            if st.button(
+                "Apply security policies",
+                type="primary",
+                key="gov_security_apply_btn",
+            ):
+                with st.spinner("Creating users and attaching MinIO policies..."):
+                    try:
+                        sys.path.insert(
+                            0,
+                            str(Path(__file__).resolve().parents[1] / "governance"),
+                        )
+                        from data_security import (
+                            apply_security_policies,
+                            save_security_report,
+                            display_access_matrix,
+                        )
+                        from shared.minio_helpers import create_minio_client
+
+                        results = apply_security_policies()
+                        minio_client = create_minio_client()
+                        save_security_report(minio_client, results, {})
+                        st.session_state["_security_results"] = results
+                    except Exception as e:
+                        st.error(f"Failed to apply policies: {e}")
+                        return
+
+                st.success(
+                    f"Applied {len(results)} role policies successfully."
+                )
+
+                for r in results:
+                    role = r["role"]
+                    status = r["user_status"]
+                    perms = r["permissions"]
+                    buckets = ", ".join(
+                        f"{b} ({a})" for b, a in perms.items()
+                    )
+                    st.markdown(
+                        f"- **{role}** ({status}): {buckets}"
+                    )
+
+        with col_verify:
+            if st.button(
+                "Verify access controls",
+                type="secondary",
+                key="gov_security_verify_btn",
+            ):
+                with st.spinner("Testing read/write access for each role..."):
+                    try:
+                        sys.path.insert(
+                            0,
+                            str(Path(__file__).resolve().parents[1] / "governance"),
+                        )
+                        from data_security import (
+                            ROLES,
+                            apply_security_policies,
+                            verify_access,
+                            save_security_report,
+                        )
+                        from shared.minio_helpers import create_minio_client
+
+                        results = st.session_state.get("_security_results")
+                        if results is None:
+                            results = apply_security_policies()
+                            st.session_state["_security_results"] = results
+
+                        verification = {}
+                        for role_name, role_config in ROLES.items():
+                            checks = verify_access(role_name, role_config)
+                            verification[role_name] = checks
+
+                        minio_client = create_minio_client()
+                        save_security_report(
+                            minio_client, results, verification,
+                        )
+                    except Exception as e:
+                        st.error(f"Access verification failed: {e}")
+                        return
+
+                all_passed = True
+                for role_name, checks in verification.items():
+                    role_ok = all(c["passed"] for c in checks)
+                    icon = "✅" if role_ok else "❌"
+                    st.markdown(f"### {icon} {role_name}")
+
+                    for c in checks:
+                        bucket = c["bucket"]
+                        expected = c["expected"]
+                        actual_parts = []
+                        if c["can_read"]:
+                            actual_parts.append("R")
+                        if c["can_write"]:
+                            actual_parts.append("W")
+                        actual = "".join(actual_parts) or "—"
+                        exp_label = {
+                            "readwrite": "RW",
+                            "readonly": "R",
+                            "none": "—",
+                        }.get(expected, expected)
+
+                        check_icon = "✓" if c["passed"] else "✗"
+                        st.markdown(
+                            f"- {check_icon} **{bucket}** — "
+                            f"expected: {exp_label}, actual: {actual}"
+                        )
+
+                        if not c["passed"]:
+                            all_passed = False
+
+                st.divider()
+                if all_passed:
+                    st.success("All access checks passed.")
+                else:
+                    st.error("Some access checks failed.")
 
 
 # ── Main layout ───────────────────────────────────────────────────────────

@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 from deltalake import DeltaTable
 
-from shared.sync_delta import OBSERVATIONS_DELTA_PATH, s3_storage_options
+from shared.sync_delta import OBSERVATIONS_DELTA_PATH, s3_storage_options_readonly
 
 
 # ── KPI helpers ─────────────────────────────────────────────────────────────
@@ -402,10 +402,11 @@ def _exploitation_delta_uri() -> str:
 
 def load_exploitation_observations() -> tuple[pd.DataFrame, str, int]:
     uri = _exploitation_delta_uri()
-    storage = s3_storage_options()
+    storage = s3_storage_options_readonly()
     if not storage.get("AWS_ACCESS_KEY_ID") or not storage.get("AWS_SECRET_ACCESS_KEY"):
         raise RuntimeError(
-            "MinIO credentials missing. Set MINIO_ACCESS_KEY and MINIO_SECRET_KEY in .env."
+            "MinIO credentials missing. Set MINIO_ANALYST_ACCESS_KEY and "
+            "MINIO_ANALYST_SECRET_KEY in .env."
         )
     dt = DeltaTable(uri, storage_options=storage)
     return dt.to_pandas(), uri, dt.version()

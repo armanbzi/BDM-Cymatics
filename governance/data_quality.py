@@ -252,12 +252,29 @@ def validate_landing_zone(minio_client) -> list[dict]:
         col = r.expectation_config.kwargs.get("column", "—")
         success = r.success
         label = f"{name} ({col})"
-        p = 1 if success else 0
-        f = 0 if success else 1
-        results.append({"name": label, "passed": p, "failed": f})
-        _print_result(label, p, f, 1)
+        n_pass = r.result.get("element_count", 1) - r.result.get("unexpected_count", 0) if r.result else (1 if success else 0)
+        n_fail = r.result.get("unexpected_count", 0) if r.result else (0 if success else 1)
 
-    # Cleanup ephemeral suite
+        failed_records = []
+        if not success and r.result:
+            indices = r.result.get("partial_unexpected_index_list", [])
+            values = r.result.get("partial_unexpected_list", [])
+            for idx, val in zip(indices, values):
+                rec = {"index": idx, "value": val}
+                if idx < len(df):
+                    rec["uuid"] = str(df.iloc[idx].get("uuid", "?"))
+                    rec["category"] = str(df.iloc[idx].get("category", ""))
+                    rec["source"] = str(df.iloc[idx].get("source", ""))
+                failed_records.append(rec)
+
+        results.append({
+            "name": label, "passed": n_pass, "failed": n_fail,
+            "failed_records": failed_records,
+        })
+        _print_result(label, n_pass, n_fail, n_pass + n_fail)
+        for rec in failed_records:
+            print(f"      → uuid={rec.get('uuid','?')[:12]}…  value={rec.get('value')}")
+
     # ── Unstructured checks: audio file integrity ────────────────
     _print_section("Checkpoint 1 — Audio File Integrity")
 
@@ -265,34 +282,40 @@ def validate_landing_zone(minio_client) -> list[dict]:
     exist_pass, exist_fail = 0, 0
     wav_pass, wav_fail = 0, 0
     size_pass, size_fail = 0, 0
+    exist_failed_recs, wav_failed_recs, size_failed_recs = [], [], []
 
     sample_size = min(len(audio_paths), 50)
     sampled = audio_paths[:sample_size]
 
-    for path in sampled:
+    for i, path in enumerate(sampled):
+        row_uuid = str(df.iloc[i].get("uuid", "?")) if i < len(df) else "?"
+
         if _object_exists(minio_client, LANDING_BUCKET, path):
             exist_pass += 1
         else:
             exist_fail += 1
+            exist_failed_recs.append({"uuid": row_uuid, "path": path, "reason": "file not found"})
 
         if _is_valid_wav_header(minio_client, LANDING_BUCKET, path):
             wav_pass += 1
         else:
             wav_fail += 1
+            wav_failed_recs.append({"uuid": row_uuid, "path": path, "reason": "invalid WAV header"})
 
         sz = _object_size(minio_client, LANDING_BUCKET, path)
         if sz > 0:
             size_pass += 1
         else:
             size_fail += 1
+            size_failed_recs.append({"uuid": row_uuid, "path": path, "reason": f"size={sz}"})
 
-    results.append({"name": "Audio files exist", "passed": exist_pass, "failed": exist_fail})
+    results.append({"name": "Audio files exist", "passed": exist_pass, "failed": exist_fail, "failed_records": exist_failed_recs})
     _print_result("Audio files exist in MinIO", exist_pass, exist_fail, sample_size)
 
-    results.append({"name": "Valid WAV headers", "passed": wav_pass, "failed": wav_fail})
+    results.append({"name": "Valid WAV headers", "passed": wav_pass, "failed": wav_fail, "failed_records": wav_failed_recs})
     _print_result("Valid WAV headers (RIFF/WAVE)", wav_pass, wav_fail, sample_size)
 
-    results.append({"name": "Audio file size > 0", "passed": size_pass, "failed": size_fail})
+    results.append({"name": "Audio file size > 0", "passed": size_pass, "failed": size_fail, "failed_records": size_failed_recs})
     _print_result("Audio file size > 0 bytes", size_pass, size_fail, sample_size)
 
     return results
@@ -371,10 +394,28 @@ def validate_trusted_zone(minio_client) -> list[dict]:
         col = r.expectation_config.kwargs.get("column", "—")
         success = r.success
         label = f"{name} ({col})"
-        p = 1 if success else 0
-        f = 0 if success else 1
-        results.append({"name": label, "passed": p, "failed": f})
-        _print_result(label, p, f, 1)
+        n_pass = r.result.get("element_count", 1) - r.result.get("unexpected_count", 0) if r.result else (1 if success else 0)
+        n_fail = r.result.get("unexpected_count", 0) if r.result else (0 if success else 1)
+
+        failed_records = []
+        if not success and r.result:
+            indices = r.result.get("partial_unexpected_index_list", [])
+            values = r.result.get("partial_unexpected_list", [])
+            for idx, val in zip(indices, values):
+                rec = {"index": idx, "value": val}
+                if idx < len(df):
+                    rec["uuid"] = str(df.iloc[idx].get("uuid", "?"))
+                    rec["category"] = str(df.iloc[idx].get("category", ""))
+                    rec["source"] = str(df.iloc[idx].get("source", ""))
+                failed_records.append(rec)
+
+        results.append({
+            "name": label, "passed": n_pass, "failed": n_fail,
+            "failed_records": failed_records,
+        })
+        _print_result(label, n_pass, n_fail, n_pass + n_fail)
+        for rec in failed_records:
+            print(f"      → uuid={rec.get('uuid','?')[:12]}…  value={rec.get('value')}")
 
     # ── Unstructured checks: image integrity ─────────────────────
     _print_section("Checkpoint 2 — Cymatics Image Integrity")
@@ -386,31 +427,37 @@ def validate_trusted_zone(minio_client) -> list[dict]:
     img_exist_p, img_exist_f = 0, 0
     png_valid_p, png_valid_f = 0, 0
     res_pass, res_fail = 0, 0
+    img_exist_failed, png_failed, res_failed = [], [], []
 
-    for path in sampled:
+    for i, path in enumerate(sampled):
+        row_uuid = str(df.iloc[i].get("uuid", "?")) if i < len(df) else "?"
+
         if _object_exists(minio_client, TRUSTED_BUCKET, path):
             img_exist_p += 1
         else:
             img_exist_f += 1
+            img_exist_failed.append({"uuid": row_uuid, "path": path, "reason": "file not found"})
 
         if _is_valid_png_header(minio_client, TRUSTED_BUCKET, path):
             png_valid_p += 1
         else:
             png_valid_f += 1
+            png_failed.append({"uuid": row_uuid, "path": path, "reason": "invalid PNG header"})
 
         w, h = _png_dimensions(minio_client, TRUSTED_BUCKET, path)
         if w == EXPECTED_IMG_RES and h == EXPECTED_IMG_RES:
             res_pass += 1
         else:
             res_fail += 1
+            res_failed.append({"uuid": row_uuid, "path": path, "reason": f"resolution {w}×{h}"})
 
-    results.append({"name": "Images exist", "passed": img_exist_p, "failed": img_exist_f})
+    results.append({"name": "Images exist", "passed": img_exist_p, "failed": img_exist_f, "failed_records": img_exist_failed})
     _print_result("Cymatics images exist in MinIO", img_exist_p, img_exist_f, sample_size)
 
-    results.append({"name": "Valid PNG headers", "passed": png_valid_p, "failed": png_valid_f})
+    results.append({"name": "Valid PNG headers", "passed": png_valid_p, "failed": png_valid_f, "failed_records": png_failed})
     _print_result("Valid PNG signature", png_valid_p, png_valid_f, sample_size)
 
-    results.append({"name": "Image resolution 2048×2048", "passed": res_pass, "failed": res_fail})
+    results.append({"name": f"Image resolution {EXPECTED_IMG_RES}×{EXPECTED_IMG_RES}", "passed": res_pass, "failed": res_fail, "failed_records": res_failed})
     _print_result(f"Image resolution {EXPECTED_IMG_RES}×{EXPECTED_IMG_RES}", res_pass, res_fail, sample_size)
 
     # ── Unstructured checks: video integrity ─────────────────────
@@ -422,23 +469,28 @@ def validate_trusted_zone(minio_client) -> list[dict]:
 
     vid_exist_p, vid_exist_f = 0, 0
     vid_size_p, vid_size_f = 0, 0
+    vid_exist_failed, vid_size_failed = [], []
 
-    for path in sampled_v:
+    for i, path in enumerate(sampled_v):
+        row_uuid = str(df.iloc[i].get("uuid", "?")) if i < len(df) else "?"
+
         if _object_exists(minio_client, TRUSTED_BUCKET, path):
             vid_exist_p += 1
         else:
             vid_exist_f += 1
+            vid_exist_failed.append({"uuid": row_uuid, "path": path, "reason": "file not found"})
 
         sz = _object_size(minio_client, TRUSTED_BUCKET, path)
         if sz > 0:
             vid_size_p += 1
         else:
             vid_size_f += 1
+            vid_size_failed.append({"uuid": row_uuid, "path": path, "reason": f"size={sz}"})
 
-    results.append({"name": "Videos exist", "passed": vid_exist_p, "failed": vid_exist_f})
+    results.append({"name": "Videos exist", "passed": vid_exist_p, "failed": vid_exist_f, "failed_records": vid_exist_failed})
     _print_result("Cymatics videos exist in MinIO", vid_exist_p, vid_exist_f, sample_size_v)
 
-    results.append({"name": "Video file size > 0", "passed": vid_size_p, "failed": vid_size_f})
+    results.append({"name": "Video file size > 0", "passed": vid_size_p, "failed": vid_size_f, "failed_records": vid_size_failed})
     _print_result("Video file size > 0 bytes", vid_size_p, vid_size_f, sample_size_v)
 
     return results
@@ -512,10 +564,28 @@ def validate_exploitation_zone(minio_client) -> list[dict]:
         col = r.expectation_config.kwargs.get("column", "—")
         success = r.success
         label = f"{name} ({col})"
-        p = 1 if success else 0
-        f = 0 if success else 1
-        results.append({"name": label, "passed": p, "failed": f})
-        _print_result(label, p, f, 1)
+        n_pass = r.result.get("element_count", 1) - r.result.get("unexpected_count", 0) if r.result else (1 if success else 0)
+        n_fail = r.result.get("unexpected_count", 0) if r.result else (0 if success else 1)
+
+        failed_records = []
+        if not success and r.result:
+            indices = r.result.get("partial_unexpected_index_list", [])
+            values = r.result.get("partial_unexpected_list", [])
+            for idx, val in zip(indices, values):
+                rec = {"index": idx, "value": val}
+                if idx < len(df):
+                    rec["uuid"] = str(df.iloc[idx].get("uuid", "?"))
+                    rec["category"] = str(df.iloc[idx].get("category", ""))
+                    rec["source"] = str(df.iloc[idx].get("source", ""))
+                failed_records.append(rec)
+
+        results.append({
+            "name": label, "passed": n_pass, "failed": n_fail,
+            "failed_records": failed_records,
+        })
+        _print_result(label, n_pass, n_fail, n_pass + n_fail)
+        for rec in failed_records:
+            print(f"      → uuid={rec.get('uuid','?')[:12]}…  value={rec.get('value')}")
 
     # ── Embedding sanity checks (Milvus) ─────────────────────────
     _print_section("Checkpoint 3 — Embedding Sanity (Milvus)")
@@ -531,14 +601,14 @@ def validate_exploitation_zone(minio_client) -> list[dict]:
             ("sound_cymatics_embeddings", CYMATICS_EMBEDDING_DIM, "cymatics_embedding"),
         ]:
             if not milvus_client.has_collection(coll_name):
-                results.append({"name": f"Collection {coll_name}", "passed": 0, "failed": 1})
+                results.append({"name": f"Collection {coll_name}", "passed": 0, "failed": 1, "failed_records": []})
                 _print_result(f"Collection '{coll_name}' exists", 0, 1, 1)
                 continue
 
             stats = milvus_client.get_collection_stats(coll_name)
             row_count = int(stats.get("row_count", 0))
 
-            results.append({"name": f"Collection {coll_name}", "passed": 1, "failed": 0})
+            results.append({"name": f"Collection {coll_name}", "passed": 1, "failed": 0, "failed_records": []})
             _print_result(
                 f"Collection '{coll_name}' exists ({row_count} rows)", 1, 0, 1,
             )
@@ -553,27 +623,31 @@ def validate_exploitation_zone(minio_client) -> list[dict]:
 
             dim_pass, dim_fail = 0, 0
             zero_pass, zero_fail = 0, 0
+            dim_failed_recs, zero_failed_recs = [], []
             for entity in sample:
                 vec = entity.get(field_name, [])
+                uid = entity.get("uuid", "?")
                 if len(vec) == expected_dim:
                     dim_pass += 1
                 else:
                     dim_fail += 1
+                    dim_failed_recs.append({"uuid": uid, "value": len(vec), "reason": f"dim={len(vec)}, expected={expected_dim}"})
                 if any(v != 0.0 for v in vec):
                     zero_pass += 1
                 else:
                     zero_fail += 1
+                    zero_failed_recs.append({"uuid": uid, "reason": "all-zero vector"})
 
             n = len(sample)
-            results.append({"name": f"{coll_name} dim={expected_dim}", "passed": dim_pass, "failed": dim_fail})
+            results.append({"name": f"{coll_name} dim={expected_dim}", "passed": dim_pass, "failed": dim_fail, "failed_records": dim_failed_recs})
             _print_result(f"  Dimensionality = {expected_dim}", dim_pass, dim_fail, n)
 
-            results.append({"name": f"{coll_name} non-zero", "passed": zero_pass, "failed": zero_fail})
+            results.append({"name": f"{coll_name} non-zero", "passed": zero_pass, "failed": zero_fail, "failed_records": zero_failed_recs})
             _print_result(f"  Vectors non-zero", zero_pass, zero_fail, n)
 
     except Exception as e:
         print(f"  Milvus not reachable — skipping embedding checks: {e}")
-        results.append({"name": "Milvus connection", "passed": 0, "failed": 1})
+        results.append({"name": "Milvus connection", "passed": 0, "failed": 1, "failed_records": []})
 
     return results
 

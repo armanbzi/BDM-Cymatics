@@ -558,6 +558,10 @@ LINEAGE_TRACKER_SCRIPT = os.path.join(
     PROJECT_ROOT, "governance", "lineage_tracker.py"
 )
 
+DATA_SECURITY_SCRIPT = os.path.join(
+    PROJECT_ROOT, "governance", "data_security.py"
+)
+
 GOVERNANCE_TASKS = {
     "1": {
         "name": "Data quality checks (Great Expectations)",
@@ -567,6 +571,11 @@ GOVERNANCE_TASKS = {
     "2": {
         "name": "Lineage tracking (cross-zone traceability)",
         "script": LINEAGE_TRACKER_SCRIPT,
+        "callable": "run_interactive",
+    },
+    "3": {
+        "name": "Data security (MinIO bucket policies)",
+        "script": DATA_SECURITY_SCRIPT,
         "callable": "run_interactive",
     },
 }
@@ -587,7 +596,7 @@ def run_governance_menu():
     while True:
         print_governance_banner()
         try:
-            choice = input("  Select task [1-2, b]: ").strip().lower()
+            choice = input("  Select task [1-3, b]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("\n  Back to main menu.")
             break

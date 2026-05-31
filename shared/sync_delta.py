@@ -14,7 +14,11 @@ from deltalake import write_deltalake
 
 from shared.minio_helpers import (
     MINIO_ACCESS_KEY,
+    MINIO_ANALYST_ACCESS_KEY,
+    MINIO_ANALYST_SECRET_KEY,
     MINIO_ENDPOINT,
+    MINIO_PIPELINE_ACCESS_KEY,
+    MINIO_PIPELINE_SECRET_KEY,
     MINIO_SECRET_KEY,
     MINIO_SECURE,
     PARQUET_KEY,
@@ -26,10 +30,24 @@ OBSERVATIONS_DELTA_PATH = "metadata/observations_delta"
 
 
 def s3_storage_options() -> dict[str, str]:
+    """Pipeline (RW) storage options — used by Delta Lake writes."""
     scheme = "https" if MINIO_SECURE else "http"
     return {
-        "AWS_ACCESS_KEY_ID": MINIO_ACCESS_KEY,
-        "AWS_SECRET_ACCESS_KEY": MINIO_SECRET_KEY,
+        "AWS_ACCESS_KEY_ID": MINIO_PIPELINE_ACCESS_KEY,
+        "AWS_SECRET_ACCESS_KEY": MINIO_PIPELINE_SECRET_KEY,
+        "AWS_ENDPOINT_URL": f"{scheme}://{MINIO_ENDPOINT}",
+        "AWS_REGION": "us-east-1",
+        "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
+        "AWS_ALLOW_HTTP": "true" if not MINIO_SECURE else "false",
+    }
+
+
+def s3_storage_options_readonly() -> dict[str, str]:
+    """Analyst (read-only) storage options — used by data consumption."""
+    scheme = "https" if MINIO_SECURE else "http"
+    return {
+        "AWS_ACCESS_KEY_ID": MINIO_ANALYST_ACCESS_KEY,
+        "AWS_SECRET_ACCESS_KEY": MINIO_ANALYST_SECRET_KEY,
         "AWS_ENDPOINT_URL": f"{scheme}://{MINIO_ENDPOINT}",
         "AWS_REGION": "us-east-1",
         "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
