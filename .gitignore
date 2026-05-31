@@ -18,6 +18,15 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
 # OS files
 .DS_Store
 Thumbs.db

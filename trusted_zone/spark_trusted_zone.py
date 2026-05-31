@@ -436,7 +436,18 @@ def run_spark_trusted_zone_subprocess(
         or os.environ.get("SPARK_BATCH_COMPOSE_SERVICE", "trusted-spark-batch").strip()
         or "trusted-spark-batch"
     )
-    cmd = ["docker", "compose", "run", "--rm", service]
+    cmd = ["docker", "compose"]
+    project = os.environ.get("COMPOSE_PROJECT_NAME", "bdm-cymatics").strip() or "bdm-cymatics"
+    cmd.extend(["-p", project])
+    host_root = os.environ.get("CYMATICS_HOST_PROJECT_ROOT", "").strip()
+    if host_root:
+        cmd.extend(
+            ["-f", str(root / "docker-compose.yml"), "--project-directory", host_root]
+        )
+    cmd.extend(["run", "--rm"])
+    if host_root:
+        cmd.append("--no-deps")
+    cmd.append(service)
     proc = subprocess.run(
         cmd,
         cwd=str(root),

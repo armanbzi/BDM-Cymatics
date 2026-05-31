@@ -28,7 +28,25 @@ requests
 deltalake
 pandas
 
+# Data consumption dashboard (Streamlit + Plotly)
+streamlit
+plotly
+
 # Resource monitoring (orchestrator)
 psutil
+
+# Milvus vector database (exploitation-zone embeddings)
+pymilvus>=2.4,<2.5
+
+# Audio embeddings — PANNs CNN14 (2048-dim environmental sound classification)
+torch
+panns-inference
+
+# Text embeddings — all-MiniLM-L6-v2 (384-dim sentence embeddings for RAG)
+sentence-transformers
+
+# Cymatics image embeddings — CLIP ViT-B/32 (512-dim visual pattern search)
+transformers
+Pillow
 
 # ffmpeg is also required system-wide (apt install ffmpeg / brew install ffmpeg)

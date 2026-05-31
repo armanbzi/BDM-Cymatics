@@ -1,6 +1,8 @@
 
 # Run: docker compose up -d (includes Spark master/workers/history alongside MinIO, Kafka, Airflow, SonarQube).
 
+name: bdm-cymatics
+
 x-airflow-common: &airflow-common
   build:
     context: .
@@ -25,6 +27,9 @@ x-airflow-common: &airflow-common
     EXPLOITATION_ZONE_BUCKET: ${EXPLOITATION_ZONE_BUCKET:-exploitation-zone}
     FREESOUND_API_KEY: ${FREESOUND_API_KEY:-}
     CYMATICS_PROJECT_ROOT: /opt/airflow/project
+    # Host repo path for Spark batch jobs launched from Airflow via the Docker socket.
+    CYMATICS_HOST_PROJECT_ROOT: ${CYMATICS_HOST_PROJECT_ROOT:-${PWD}}
+    COMPOSE_PROJECT_NAME: bdm-cymatics
   volumes:
     - ./landing_zone/cold_path/dags:/opt/airflow/dags/cold_path
     - ./trusted_zone/dags:/opt/airflow/dags/trusted_zone
@@ -299,6 +304,109 @@ services:
         condition: service_started
 
   # ---------------------------------------------------------------
+  #  Milvus — vector database for embedding similarity search
+  #  Milvus UI (Attu): http://localhost:3000
+  #  Milvus gRPC: localhost:19530
+  # ---------------------------------------------------------------
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: cymatics-milvus-etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - milvus-etcd-data:/etcd
+    command: >
+      etcd
+      -advertise-client-urls=http://127.0.0.1:2379
+      -listen-client-urls=http://0.0.0.0:2379
+      --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  milvus-minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: cymatics-milvus-minio
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - milvus-minio-data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  milvus:
+    image: milvusdb/milvus:v2.4.4
+    container_name: cymatics-milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+    volumes:
+      - milvus-data:/var/lib/milvus
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  attu:
+    image: zilliz/attu:v2.4
+    container_name: cymatics-attu
+    ports:
+      - "3000:3000"
+    environment:
+      MILVUS_URL: milvus:19530
+    depends_on:
+      milvus:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------
+  #  Streamlit dashboard (http://localhost:8501)
+  # ---------------------------------------------------------------
+  streamlit:
+    image: python:3.11-slim
+    container_name: cymatics-streamlit
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-admin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-password}
+      MINIO_SECURE: "${MINIO_SECURE:-false}"
+      EXPLOITATION_ZONE_BUCKET: ${EXPLOITATION_ZONE_BUCKET:-exploitation-zone}
+    ports:
+      - "8501:8501"
+    command: >
+      bash -c "pip install --no-cache-dir streamlit plotly deltalake pandas pyarrow minio python-dotenv numpy &&
+               streamlit run data_consumption/data_consumption_all.py
+               --server.headless true
+               --server.address 0.0.0.0"
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------
   #  SonarQube (code quality — http://localhost:9090)
   # ---------------------------------------------------------------
   sonarqube:
@@ -413,3 +521,6 @@ volumes:
   sonarqube-extensions:
   sonarqube-logs:
   sonar-pgdata:
+  milvus-etcd-data:
+  milvus-minio-data:
+  milvus-data:

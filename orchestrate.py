@@ -12,7 +12,7 @@ Interactive CLI that lets you choose which flow to run:
   6. Exploitation zone  → exploitation_zone/exploitation_zone_processing.py
   7. Sync Delta Lake    → shared/sync_delta.py (all zones)
   8. SonarQube analysis (code quality scan + results)
-  9. Data consumption   (KPI queries on exploitation Delta)
+  9. Data consumption   (KPI queries + Streamlit dashboard)
 
 While a flow is running, live CPU / RAM / disk metrics are displayed
 every 2 seconds so you can monitor resource usage in real time.
@@ -93,6 +93,16 @@ FLOWS = {
         "name": "Sync all zones → Delta Lake",
         "scripts": [
             os.path.join(PROJECT_ROOT, "shared", "sync_delta.py"),
+        ],
+    },
+    "10": {
+        "name": "Milvus embeddings (audio + text)",
+        "scripts": [
+            os.path.join(
+                PROJECT_ROOT,
+                "exploitation_zone",
+                "milvus_embeddings.py",
+            ),
         ],
     },
 }
@@ -411,10 +421,45 @@ DISCOVER_KPIS_SCRIPT = os.path.join(
     PROJECT_ROOT, "data_consumption", "tasks", "discover_kpis.py"
 )
 
+DATA_CONSUMPTION_DASHBOARD = os.path.join(
+    PROJECT_ROOT, "data_consumption", "data_consumption_all.py"
+)
+
+AUDIO_CLASSIFICATION_SCRIPT = os.path.join(
+    PROJECT_ROOT, "data_consumption", "tasks", "audio_classification.py"
+)
+
+CYMATICS_CLASSIFICATION_SCRIPT = os.path.join(
+    PROJECT_ROOT, "data_consumption", "tasks", "cymatics_classification.py"
+)
+
+SEARCH_METADATA_SCRIPT = os.path.join(
+    PROJECT_ROOT, "data_consumption", "tasks", "search_metadata.py"
+)
+
 DATA_CONSUMPTION_TASKS = {
     "1": {
         "name": "Discover defined queries (KPIs)",
         "script": DISCOVER_KPIS_SCRIPT,
+        "callable": "run_interactive",
+    },
+    "2": {
+        "name": "Streamlit dashboard (interactive UI)",
+        "streamlit": DATA_CONSUMPTION_DASHBOARD,
+    },
+    "3": {
+        "name": "Audio classification (record & search)",
+        "script": AUDIO_CLASSIFICATION_SCRIPT,
+        "callable": "run_interactive",
+    },
+    "4": {
+        "name": "Cymatics classification (pattern search)",
+        "script": CYMATICS_CLASSIFICATION_SCRIPT,
+        "callable": "run_interactive",
+    },
+    "5": {
+        "name": "Metadata search (natural language)",
+        "script": SEARCH_METADATA_SCRIPT,
         "callable": "run_interactive",
     },
 }
@@ -435,7 +480,7 @@ def run_data_consumption_menu():
     while True:
         print_data_consumption_banner()
         try:
-            choice = input("  Select task [1, b]: ").strip().lower()
+            choice = input("  Select task [1-5, b]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("\n  Back to main menu.")
             break
@@ -451,6 +496,34 @@ def run_data_consumption_menu():
         print(f"  {task['name']}")
         print(f"{'─' * 62}\n")
 
+        # ── Streamlit dashboard ──
+        if "streamlit" in task:
+            dashboard = task["streamlit"]
+            if not os.path.isfile(dashboard):
+                print(f"  Dashboard script not found: {dashboard}")
+                continue
+            print("  Launching Streamlit dashboard...")
+            print("  Press Ctrl+C to stop the server and return.\n")
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "streamlit", "run", dashboard,
+                     "--server.headless", "true"],
+                    cwd=PROJECT_ROOT,
+                    stdin=sys.stdin,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                )
+                proc.wait()
+            except KeyboardInterrupt:
+                print("\n  Stopping Streamlit server...")
+                try:
+                    proc.send_signal(signal.SIGTERM)
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+            continue
+
+        # ── Regular callable task ──
         script = task["script"]
         if not os.path.isfile(script):
             print(f"  Task script not found: {script}")
@@ -462,7 +535,8 @@ def run_data_consumption_menu():
         try:
             import importlib.util
 
-            spec = importlib.util.spec_from_file_location("discover_kpis", script)
+            mod_name = os.path.splitext(os.path.basename(script))[0]
+            spec = importlib.util.spec_from_file_location(mod_name, script)
             if spec is None or spec.loader is None:
                 raise RuntimeError(f"Cannot load task module from {script}")
             mod = importlib.util.module_from_spec(spec)
@@ -486,6 +560,7 @@ def print_banner():
         print(f"   [{key}]  {flow['name']}{tag}")
     print("   [8]  SonarQube code analysis")
     print("   [9]  Data consumption tasks")
+    print("  [10]  Milvus embeddings (audio + text)")
     print()
     print("   [q]  Quit")
     print()
@@ -569,7 +644,7 @@ def main():
     while True:
         print_banner()
         try:
-            choice = input("  Select flow [1-9, q]: ").strip().lower()
+            choice = input("  Select flow [1-10, q]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("\n  Bye!")
             break

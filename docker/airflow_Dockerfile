@@ -15,5 +15,8 @@ RUN usermod -aG docker airflow 2>/dev/null || true
 
 USER airflow
 
-RUN pip install --no-cache-dir \
-    python-dotenv requests numpy scipy minio pyarrow pyspark opencv-python
+# Pin numpy<2 first — base image pandas is built against numpy 1.x; opencv-python otherwise pulls numpy 2.x.
+RUN pip install --no-cache-dir "numpy>=1.23.2,<2" \
+    && pip install --no-cache-dir \
+        python-dotenv requests scipy minio pyarrow pyspark deltalake \
+    && pip install --no-cache-dir opencv-python --no-deps

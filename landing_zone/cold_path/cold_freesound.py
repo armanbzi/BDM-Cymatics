@@ -165,7 +165,7 @@ FREESOUND_SEARCH_FIELDS = (
 
 def search_freesound(query, page_size=15, page=1, created_after=None):
     """Return list of sound dicts for ≤10 s sounds matching *query*."""
-    url = "https://freesound.org/apiv2/search/text/"
+    url = "https://freesound.org/apiv2/search/"
     duration_filter = "duration:[1 TO 10]"
     if created_after:
         duration_filter += f" created:[{created_after} TO *]"
@@ -179,6 +179,9 @@ def search_freesound(query, page_size=15, page=1, created_after=None):
     }
     t = (_FS_CONNECT, _FS_READ_SEARCH)
     resp = _freesound_get(url, params=params, timeout=t, label="Search")
+    # Freesound returns 404 when page exceeds available pages (not a fatal API error).
+    if resp.status_code == 404:
+        return []
     data = _parse_freesound_response(resp)
     return data.get("results", [])
 
@@ -380,7 +383,7 @@ def run(batch_size=10, created_after=None, update_checkpoint=False):
                 results = search_freesound(query, page_size=15,
                                            page=query_page[query],
                                            created_after=created_after)
-            except requests.exceptions.RequestException as e:
+            except (RuntimeError, requests.exceptions.RequestException) as e:
                 print(f"  Warning: search failed for '{query}': {e}")
                 exhausted_queries.add(query)
                 attempts += 1
