@@ -947,6 +947,212 @@ def _render_metadata_search() -> None:
                 st.divider()
 
 
+# ── Data governance (quality + lineage) ───────────────────────────────
+
+
+def _render_governance() -> None:
+    """Data governance tab — quality checks and lineage tracking."""
+    st.subheader("Data Governance")
+    st.caption(
+        "File integrity and completeness checks via Great Expectations, "
+        "plus cross-zone lineage tracking for every record."
+    )
+
+    mode = st.radio(
+        "Governance task",
+        options=["Quality Checks", "Lineage Tracking"],
+        horizontal=True,
+        key="gov_mode",
+    )
+
+    if mode == "Quality Checks":
+        st.markdown(
+            "Validates data quality at every zone boundary — structured "
+            "metadata via Great Expectations, plus unstructured file "
+            "integrity checks (WAV, PNG, video) against MinIO."
+        )
+
+        if st.button("Run quality checks", type="primary", key="gov_quality_btn"):
+            with st.spinner("Running quality checks across all zones..."):
+                try:
+                    sys.path.insert(
+                        0, str(Path(__file__).resolve().parents[1] / "governance"),
+                    )
+                    from data_quality import (
+                        validate_landing_zone,
+                        validate_trusted_zone,
+                        validate_exploitation_zone,
+                    )
+                    from shared.minio_helpers import create_minio_client
+
+                    minio_client = create_minio_client()
+
+                    all_results: list[dict] = []
+                    for zone_name, validator in [
+                        ("Landing Zone", validate_landing_zone),
+                        ("Trusted Zone", validate_trusted_zone),
+                        ("Exploitation Zone", validate_exploitation_zone),
+                    ]:
+                        try:
+                            results = validator(minio_client)
+                            all_results.append({"zone": zone_name, "checks": results})
+                        except Exception as e:
+                            all_results.append({
+                                "zone": zone_name,
+                                "checks": [{"name": "Connection", "passed": 0, "failed": 1}],
+                                "error": str(e),
+                            })
+                except Exception as e:
+                    st.error(f"Quality checks failed: {e}")
+                    return
+
+            # Display results.
+            total_pass = 0
+            total_fail = 0
+
+            for zone_result in all_results:
+                zone = zone_result["zone"]
+                checks = zone_result["checks"]
+
+                if "error" in zone_result:
+                    st.warning(f"**{zone}**: {zone_result['error']}")
+                    continue
+
+                z_pass = sum(c["passed"] for c in checks)
+                z_fail = sum(c["failed"] for c in checks)
+                total_pass += z_pass
+                total_fail += z_fail
+
+                icon = "✅" if z_fail == 0 else "⚠️"
+                st.markdown(f"### {icon} {zone}")
+
+                for check in checks:
+                    p = check["passed"]
+                    f = check["failed"]
+                    total = p + f
+                    name = check["name"]
+                    if f == 0:
+                        st.markdown(f"- ✓ **{name}** — {p}/{total} passed")
+                    else:
+                        st.markdown(f"- ✗ **{name}** — {p}/{total} passed, {f} failed")
+
+                st.divider()
+
+            if total_fail == 0:
+                st.success(
+                    f"All checks passed — {total_pass} expectations met."
+                )
+            else:
+                st.error(
+                    f"{total_fail} check(s) failed — "
+                    f"{total_pass}/{total_pass + total_fail} passed."
+                )
+
+    else:
+        st.markdown(
+            "Traces every record (UUID) across all pipeline zones: "
+            "Landing → Trusted → Exploitation → Milvus embeddings."
+        )
+
+        if st.button("Build lineage table", type="primary", key="gov_lineage_btn"):
+            with st.spinner("Building lineage across all zones and Milvus..."):
+                try:
+                    sys.path.insert(
+                        0, str(Path(__file__).resolve().parents[1] / "governance"),
+                    )
+                    from lineage_tracker import build_lineage, save_lineage
+                    from shared.minio_helpers import create_minio_client
+
+                    minio_client = create_minio_client()
+                    lineage = build_lineage(minio_client)
+                    save_lineage(minio_client, lineage)
+                except Exception as e:
+                    st.error(f"Lineage tracking failed: {e}")
+                    return
+
+            if not lineage:
+                st.warning("No lineage records found.")
+                return
+
+            # Summary metrics.
+            total = len(lineage)
+            full = sum(1 for r in lineage if r["completeness"] == 1.0)
+            partial = sum(1 for r in lineage if 0 < r["completeness"] < 1.0)
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total records", total)
+            col2.metric("Full pipeline", full)
+            col3.metric("Partial", partial)
+
+            st.divider()
+
+            # Per-stage bar.
+            stage_data = {
+                "Stage": [
+                    "Landing", "Trusted", "Exploitation",
+                    "Audio emb.", "Text emb.", "Cymatics emb.",
+                ],
+                "Count": [
+                    sum(1 for r in lineage if r["in_landing"]),
+                    sum(1 for r in lineage if r["in_trusted"]),
+                    sum(1 for r in lineage if r["in_exploitation"]),
+                    sum(1 for r in lineage if r["has_audio_embedding"]),
+                    sum(1 for r in lineage if r["has_text_embedding"]),
+                    sum(1 for r in lineage if r["has_cymatics_embedding"]),
+                ],
+            }
+            stage_df = pd.DataFrame(stage_data)
+
+            fig = px.bar(
+                stage_df,
+                x="Stage",
+                y="Count",
+                color="Stage",
+                labels={"Count": "Records present"},
+                text="Count",
+            )
+            fig.update_layout(
+                height=350,
+                title_text="Records per pipeline stage",
+                showlegend=False,
+            )
+            fig.update_traces(textposition="outside")
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Detailed records.
+            st.subheader("Record details")
+            show_count = min(total, 20)
+
+            for i, rec in enumerate(lineage[:show_count]):
+                uid = rec["uuid"]
+                comp = rec["completeness"]
+                category = rec["category"]
+
+                with st.expander(
+                    f"{uid[:24]}… — {category} — {comp:.0%} complete"
+                ):
+                    st.progress(comp)
+
+                    ic, tc, ec = st.columns(3)
+                    ic.markdown(
+                        f"**Landing:** {'✓' if rec['in_landing'] else '✗'}"
+                    )
+                    tc.markdown(
+                        f"**Trusted:** {'✓' if rec['in_trusted'] else '✗'}"
+                    )
+                    ec.markdown(
+                        f"**Exploitation:** "
+                        f"{'✓' if rec['in_exploitation'] else '✗'}"
+                    )
+
+                    st.markdown("**Transformation chain:**")
+                    for j, t in enumerate(rec["transformations"], 1):
+                        st.markdown(f"{j}. {t}")
+
+            if total > show_count:
+                st.info(f"Showing first {show_count} of {total} records.")
+
+
 # ── Main layout ───────────────────────────────────────────────────────────
 
 
@@ -954,11 +1160,12 @@ def main() -> None:
     st.title("BDM Cymatics — Data Consumption Dashboard")
 
     # ── Top-level tabs ────────────────────────────────────────────────
-    tab_kpis, tab_audio, tab_cymatics, tab_metadata = st.tabs([
+    tab_kpis, tab_audio, tab_cymatics, tab_metadata, tab_gov = st.tabs([
         "KPI Dashboard",
         "Audio Classification",
         "Cymatics Classification",
         "Metadata Search",
+        "Data Governance",
     ])
 
     # ── Tab 1: KPI Dashboard ──────────────────────────────────────────
@@ -1009,6 +1216,10 @@ def main() -> None:
     # ── Tab 4: Metadata Search ───────────────────────────────────────
     with tab_metadata:
         _render_metadata_search()
+
+    # ── Tab 5: Data Governance ───────────────────────────────────────
+    with tab_gov:
+        _render_governance()
 
 
 if __name__ == "__main__":

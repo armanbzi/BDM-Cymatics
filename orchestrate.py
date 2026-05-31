@@ -13,6 +13,7 @@ Interactive CLI that lets you choose which flow to run:
   7. Sync Delta Lake    → shared/sync_delta.py (all zones)
   8. SonarQube analysis (code quality scan + results)
   9. Data consumption   (KPI queries + Streamlit dashboard)
+ 11. Data governance    (quality checks + lineage tracking)
 
 While a flow is running, live CPU / RAM / disk metrics are displayed
 every 2 seconds so you can monitor resource usage in real time.
@@ -547,6 +548,81 @@ def run_data_consumption_menu():
             print(f"  Task failed: {e}")
 
 
+# ── data governance ─────────────────────────────────────────────────────────
+
+DATA_QUALITY_SCRIPT = os.path.join(
+    PROJECT_ROOT, "governance", "data_quality.py"
+)
+
+LINEAGE_TRACKER_SCRIPT = os.path.join(
+    PROJECT_ROOT, "governance", "lineage_tracker.py"
+)
+
+GOVERNANCE_TASKS = {
+    "1": {
+        "name": "Data quality checks (Great Expectations)",
+        "script": DATA_QUALITY_SCRIPT,
+        "callable": "run_interactive",
+    },
+    "2": {
+        "name": "Lineage tracking (cross-zone traceability)",
+        "script": LINEAGE_TRACKER_SCRIPT,
+        "callable": "run_interactive",
+    },
+}
+
+
+def print_governance_banner():
+    print(f"\n{'─' * 62}")
+    print("  Data governance tasks")
+    print(f"{'─' * 62}")
+    for key in sorted(GOVERNANCE_TASKS.keys()):
+        print(f"   [{key}]  {GOVERNANCE_TASKS[key]['name']}")
+    print("   [b]  Back to main menu")
+    print()
+
+
+def run_governance_menu():
+    """Sub-menu for data governance tasks."""
+    while True:
+        print_governance_banner()
+        try:
+            choice = input("  Select task [1-2, b]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Back to main menu.")
+            break
+
+        if choice in ("b", "q", ""):
+            break
+        if choice not in GOVERNANCE_TASKS:
+            print("  Invalid choice. Try again.")
+            continue
+
+        task = GOVERNANCE_TASKS[choice]
+        print(f"\n{'─' * 62}")
+        print(f"  {task['name']}")
+        print(f"{'─' * 62}\n")
+
+        script = task["script"]
+        if not os.path.isfile(script):
+            print(f"  Script not found: {script}")
+            continue
+
+        try:
+            import importlib.util
+
+            mod_name = os.path.splitext(os.path.basename(script))[0]
+            spec = importlib.util.spec_from_file_location(mod_name, script)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"Cannot load task module from {script}")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            fn = getattr(mod, task["callable"])
+            fn(from_orchestrator=True)
+        except Exception as e:
+            print(f"  Task failed: {e}")
+
+
 # ── main menu ───────────────────────────────────────────────────────────────
 
 def print_banner():
@@ -561,6 +637,7 @@ def print_banner():
     print("   [8]  SonarQube code analysis")
     print("   [9]  Data consumption tasks")
     print("  [10]  Milvus embeddings (audio + text)")
+    print("  [11]  Data governance")
     print()
     print("   [q]  Quit")
     print()
@@ -644,7 +721,7 @@ def main():
     while True:
         print_banner()
         try:
-            choice = input("  Select flow [1-10, q]: ").strip().lower()
+            choice = input("  Select flow [1-11, q]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("\n  Bye!")
             break
@@ -657,6 +734,9 @@ def main():
             continue
         if choice == "9":
             run_data_consumption_menu()
+            continue
+        if choice == "11":
+            run_governance_menu()
             continue
         if choice not in FLOWS:
             print("  Invalid choice. Try again.")

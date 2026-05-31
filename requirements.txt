@@ -49,4 +49,7 @@ sentence-transformers
 transformers
 Pillow
 
+# Data governance — quality validation (Great Expectations)
+great_expectations
+
 # ffmpeg is also required system-wide (apt install ffmpeg / brew install ffmpeg)
