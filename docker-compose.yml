@@ -393,17 +393,43 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-admin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-password}
+      MINIO_PIPELINE_ACCESS_KEY: ${MINIO_PIPELINE_ACCESS_KEY:-}
+      MINIO_PIPELINE_SECRET_KEY: ${MINIO_PIPELINE_SECRET_KEY:-}
+      MINIO_ANALYST_ACCESS_KEY: ${MINIO_ANALYST_ACCESS_KEY:-}
+      MINIO_ANALYST_SECRET_KEY: ${MINIO_ANALYST_SECRET_KEY:-}
       MINIO_SECURE: "${MINIO_SECURE:-false}"
+      LANDING_ZONE_BUCKET: ${LANDING_ZONE_BUCKET:-landing-zone}
+      TRUSTED_ZONE_BUCKET: ${TRUSTED_ZONE_BUCKET:-trusted-zone}
       EXPLOITATION_ZONE_BUCKET: ${EXPLOITATION_ZONE_BUCKET:-exploitation-zone}
+      GOVERNANCE_BUCKET: ${GOVERNANCE_BUCKET:-governance-zone}
+      MILVUS_HOST: milvus
+      MILVUS_PORT: "19530"
+      # Run the MinIO Client directly (no docker-in-docker) for the
+      # data-security governance tab.
+      MC_MODE: direct
     ports:
       - "8501:8501"
-    command: >
-      bash -c "pip install --no-cache-dir streamlit plotly deltalake pandas pyarrow minio python-dotenv numpy &&
-               streamlit run data_consumption/data_consumption_all.py
-               --server.headless true
-               --server.address 0.0.0.0"
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null
+        ARCH=$$(uname -m); case "$$ARCH" in aarch64|arm64) MCARCH=arm64;; *) MCARCH=amd64;; esac
+        curl -sSL "https://dl.min.io/client/mc/release/linux-$$MCARCH/mc" -o /usr/local/bin/mc
+        chmod +x /usr/local/bin/mc
+        pip install --no-cache-dir \
+          streamlit plotly deltalake pandas pyarrow minio python-dotenv numpy \
+          'pymilvus>=2.4,<2.5' scikit-learn joblib \
+          torch panns-inference sentence-transformers transformers Pillow \
+          opencv-python-headless scipy great_expectations
+        streamlit run data_consumption/data_consumption_all.py \
+          --server.headless true \
+          --server.address 0.0.0.0
     depends_on:
       minio:
+        condition: service_healthy
+      milvus:
         condition: service_healthy
 
   # ---------------------------------------------------------------

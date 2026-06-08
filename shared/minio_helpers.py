@@ -100,7 +100,7 @@ def _rows_to_table(rows):
     if not rows:
         return None
     all_keys = list(dict.fromkeys(k for row in rows for k in row))
-    arrays = {key: [str(row.get(key, "")) for row in rows] for key in all_keys}
+    arrays = {key: [row.get(key) for row in rows] for key in all_keys}
     return pa.table(arrays)
 
 
@@ -130,14 +130,27 @@ def _unify_schemas(existing_table, new_table):
     all_names = list(
         dict.fromkeys(list(existing_table.schema.names) + list(new_table.schema.names))
     )
+    target_types = {}
+    for name in all_names:
+        new_type = new_table.schema.field(name).type if name in new_table.schema.names else None
+        existing_type = existing_table.schema.field(name).type if name in existing_table.schema.names else None
+        target_types[name] = new_type or existing_type
 
-    def pad_table(tbl, target_names):
+    def pad_and_cast(tbl, target_names):
         for name in target_names:
             if name not in tbl.schema.names:
-                tbl = tbl.append_column(name, pa.array([""] * tbl.num_rows, type=pa.string()))
+                tbl = tbl.append_column(name, pa.nulls(tbl.num_rows, type=target_types[name]))
+            elif tbl.schema.field(name).type != target_types[name]:
+                col = tbl.column(name)
+                try:
+                    col = col.cast(target_types[name])
+                except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+                    pass
+                idx = tbl.schema.get_field_index(name)
+                tbl = tbl.set_column(idx, name, col)
         return tbl.select(target_names)
 
-    return pa.concat_tables([pad_table(existing_table, all_names), pad_table(new_table, all_names)])
+    return pa.concat_tables([pad_and_cast(existing_table, all_names), pad_and_cast(new_table, all_names)])
 
 
 def update_parquet(client, bucket, new_rows, key=PARQUET_KEY):

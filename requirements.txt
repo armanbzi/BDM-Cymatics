@@ -52,4 +52,10 @@ Pillow
 # Data governance — quality validation (Great Expectations)
 great_expectations
 
+# Classifier head training on top of Milvus embeddings (exploitation-zone)
+scikit-learn
+joblib
+matplotlib
+seaborn
+
 # ffmpeg is also required system-wide (apt install ffmpeg / brew install ffmpeg)

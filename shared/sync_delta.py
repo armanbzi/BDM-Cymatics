@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 
+import pyarrow as pa
 from deltalake import write_deltalake
 
 from shared.minio_helpers import (
@@ -27,6 +28,67 @@ from shared.minio_helpers import (
 )
 
 OBSERVATIONS_DELTA_PATH = "metadata/observations_delta"
+
+# ── Per-zone Delta Lake schemas ──────────────────────────────────────────────
+# Columns not listed here stay as their inferred type (usually string).
+
+_LANDING_FLOAT_COLS = {"duration", "peak_frequency_hz"}
+_LANDING_INT_COLS = {"audio_size"}
+
+_TRUSTED_FLOAT_COLS = {
+    "duration",
+    "symmetry_score",
+    "pattern_stability_score",
+    "peak_frequency_hz",
+    "peak_time_s",
+    "peak_amplitude",
+    "peak_rms",
+    "processing_time(seconds)",
+}
+_TRUSTED_INT_COLS = {"audio_size", "image_size", "video_size"}
+
+_EXPLOITATION_FLOAT_COLS = _TRUSTED_FLOAT_COLS | {
+    "spectral_centroid_hz",
+    "spectral_bandwidth_hz",
+    "spectral_rolloff_hz",
+    "spectral_flatness",
+    "signal_energy",
+    "spectral_entropy",
+    "zero_crossing_rate",
+    "loudness",
+    "harmonic_energy_ratio",
+    "feature_processing_time(seconds)",
+}
+_EXPLOITATION_INT_COLS = _TRUSTED_INT_COLS
+
+ZONE_SCHEMAS: dict[str, dict] = {
+    "landing": {"float64": _LANDING_FLOAT_COLS, "int64": _LANDING_INT_COLS},
+    "trusted": {"float64": _TRUSTED_FLOAT_COLS, "int64": _TRUSTED_INT_COLS},
+    "exploitation": {"float64": _EXPLOITATION_FLOAT_COLS, "int64": _EXPLOITATION_INT_COLS},
+}
+
+
+def _cast_table_for_zone(table: pa.Table, zone_label: str) -> pa.Table:
+    """Cast string columns to proper numeric types based on the zone schema."""
+    schema_def = ZONE_SCHEMAS.get(zone_label)
+    if not schema_def:
+        return table
+    for col_name in table.schema.names:
+        col = table.column(col_name)
+        if col_name in schema_def.get("float64", set()):
+            target = pa.float64()
+        elif col_name in schema_def.get("int64", set()):
+            target = pa.int64()
+        else:
+            continue
+        if col.type == target:
+            continue
+        try:
+            idx = table.schema.get_field_index(col_name)
+            table = table.set_column(idx, col_name, col.cast(target))
+        except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+            pass
+    return table
 
 
 def s3_storage_options() -> dict[str, str]:
@@ -91,6 +153,7 @@ def sync_observations_to_delta(
         print(f"  [{label}] No Parquet at {parquet_key!r} — Delta sync skipped.")
         return None
 
+    table = _cast_table_for_zone(table, label)
     print(
         f"  [{label}] Syncing Delta: {parquet_key} → {delta_path} "
         f"({table.num_rows} rows, {table.num_columns} columns)..."

@@ -2,7 +2,10 @@
 """
 Data Governance — MinIO bucket policies & role-based access control.
 
-Creates four IAM users with role-based permissions across pipeline zones:
+Creates four IAM users with role-based permissions across pipeline zones,
+ensures the governance bucket exists (the landing, trusted and exploitation
+buckets are bootstrapped by their respective processing scripts), and
+persists the resulting security report under the governance bucket:
 
   ┌──────────────────┬───────────┬───────────┬──────────────┬─────────────┐
   │ Role             │ Landing   │ Trusted   │ Exploitation │ Governance  │
@@ -19,7 +22,8 @@ Implementation uses ``mc admin`` (MinIO Client) via Docker to manage users
 and attach IAM policies, since the Python SDK only supports bucket-level
 policies (not user management).
 
-Orchestrator: option 11 → Data governance → Data security.
+Orchestrator: option 9 → Data governance → Data security,
+or via Streamlit dashboard.
 
 Run directly:
     python governance/data_security.py
@@ -29,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from io import BytesIO
@@ -47,7 +52,7 @@ except ImportError:
 
 from shared.minio_helpers import create_minio_client
 
-# ── Constants ──────────────────────────────────────────────────────────────
+# ── Constants
 
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ROOT_USER = os.environ.get("MINIO_ACCESS_KEY", "admin")
@@ -56,10 +61,11 @@ MINIO_ROOT_PASSWORD = os.environ.get("MINIO_SECRET_KEY", "password")
 LANDING_BUCKET = os.environ.get("LANDING_ZONE_BUCKET", "landing-zone")
 TRUSTED_BUCKET = os.environ.get("TRUSTED_ZONE_BUCKET", "trusted-zone")
 EXPLOITATION_BUCKET = os.environ.get("EXPLOITATION_ZONE_BUCKET", "exploitation-zone")
+GOVERNANCE_BUCKET = os.environ.get("GOVERNANCE_BUCKET", "governance-zone")
 
-SECURITY_REPORT_KEY = "governance/security_report.json"
+SECURITY_REPORT_KEY = "security/security_report.json"
 
-# ── Role definitions ─────────────────────────────────────────────────────
+# ── Role definitions — 4 IAM users with per-bucket read/write permissions
 
 ROLES = {
     "pipeline_admin": {
@@ -69,6 +75,7 @@ ROLES = {
             LANDING_BUCKET: "readwrite",
             TRUSTED_BUCKET: "readwrite",
             EXPLOITATION_BUCKET: "readwrite",
+            GOVERNANCE_BUCKET: "readwrite",
         },
     },
     "data_engineer": {
@@ -78,6 +85,7 @@ ROLES = {
             LANDING_BUCKET: "readwrite",
             TRUSTED_BUCKET: "readwrite",
             EXPLOITATION_BUCKET: "readonly",
+            GOVERNANCE_BUCKET: "readonly",
         },
     },
     "data_scientist": {
@@ -86,6 +94,7 @@ ROLES = {
         "buckets": {
             TRUSTED_BUCKET: "readonly",
             EXPLOITATION_BUCKET: "readwrite",
+            GOVERNANCE_BUCKET: "readonly",
         },
     },
     "analyst": {
@@ -95,12 +104,13 @@ ROLES = {
             LANDING_BUCKET: "readonly",
             TRUSTED_BUCKET: "readonly",
             EXPLOITATION_BUCKET: "readonly",
+            GOVERNANCE_BUCKET: "readonly",
         },
     },
 }
 
 
-# ── Policy builders ──────────────────────────────────────────────────────
+# ── Policy builders — generate IAM policy JSON per role
 
 
 def _build_policy(role_name: str, bucket_permissions: dict[str, str]) -> dict:
@@ -152,20 +162,58 @@ def _build_policy(role_name: str, bucket_permissions: dict[str, str]) -> dict:
     }
 
 
-# ── mc admin helpers ─────────────────────────────────────────────────────
+# ── mc admin helpers — run MinIO Client either directly or via docker exec
 
 
 MINIO_CONTAINER = os.environ.get("MINIO_CONTAINER", "cymatics-minio")
 
 
+def _mc_use_docker() -> bool:
+    """Decide how to invoke ``mc``.
+
+    Prefer a local ``mc`` binary on PATH (this is what makes the Streamlit
+    container work — it talks to MinIO over the Docker network). Fall back to
+    ``docker exec`` into the MinIO container when only ``docker`` is available
+    (the typical host setup). ``MC_MODE`` overrides the auto-detection:
+    ``MC_MODE=direct`` forces a local binary, ``MC_MODE=docker`` forces
+    ``docker exec``.
+    """
+    mode = os.environ.get("MC_MODE", "").strip().lower()
+    if mode == "direct":
+        return False
+    if mode == "docker":
+        return True
+    # Auto: prefer a local mc binary; otherwise use docker exec.
+    return shutil.which("mc") is None
+
+
+def _mc_alias_url() -> str:
+    """URL the ``mc`` alias should point to, depending on execution mode."""
+    if _mc_use_docker():
+        # Inside the MinIO container the server is reachable on localhost.
+        return "http://localhost:9000"
+    # Running mc directly: use the configured endpoint (e.g. ``minio:9000``
+    # inside the Streamlit container, or ``localhost:9000`` on the host).
+    secure = os.environ.get("MINIO_SECURE", "false").lower() == "true"
+    scheme = "https" if secure else "http"
+    return f"{scheme}://{MINIO_ENDPOINT}"
+
+
+def _mc_cmd(args: list[str], *, interactive: bool = False) -> list[str]:
+    """Build the full ``mc`` command, prefixed for ``docker exec`` when needed."""
+    if _mc_use_docker():
+        prefix = ["docker", "exec"]
+        if interactive:
+            prefix.append("-i")
+        prefix.append(MINIO_CONTAINER)
+        return prefix + ["mc"] + args
+    return ["mc"] + args
+
+
 def _run_mc(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    """Run an ``mc`` command via ``docker exec`` inside the MinIO container."""
-    cmd = [
-        "docker", "exec", MINIO_CONTAINER,
-        "mc",
-    ] + args
+    """Run an ``mc`` command (directly or via ``docker exec``)."""
     return subprocess.run(
-        cmd,
+        _mc_cmd(args),
         capture_output=True,
         text=True,
         timeout=30,
@@ -174,10 +222,10 @@ def _run_mc(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
 
 
 def _mc_alias_set() -> None:
-    """Register the local MinIO instance as an mc alias (inside the container)."""
+    """Register the MinIO instance as an ``mc`` alias."""
     _run_mc([
         "alias", "set", "local",
-        "http://localhost:9000",
+        _mc_alias_url(),
         MINIO_ROOT_USER,
         MINIO_ROOT_PASSWORD,
     ])
@@ -195,12 +243,12 @@ def _mc_create_user(username: str, password: str) -> None:
 
 
 def _mc_create_policy(policy_name: str, policy_doc: dict) -> None:
-    """Create a named IAM policy from a policy document."""
+    """Create a named IAM policy from a policy document (via stdin)."""
     policy_json = json.dumps(policy_doc)
-    cmd = [
-        "docker", "exec", "-i", MINIO_CONTAINER,
-        "mc", "admin", "policy", "create", "local", policy_name, "/dev/stdin",
-    ]
+    cmd = _mc_cmd(
+        ["admin", "policy", "create", "local", policy_name, "/dev/stdin"],
+        interactive=True,
+    )
     subprocess.run(
         cmd,
         input=policy_json,
@@ -225,7 +273,39 @@ def _mc_user_info(username: str) -> str:
     return result.stdout
 
 
-# ── Apply policies ───────────────────────────────────────────────────────
+# ── Apply policies — create users, generate IAM docs, attach to users
+
+
+def _create_root_minio_client():
+    """Build a Minio client authenticated with MinIO root credentials.
+
+    Used for bootstrap operations (bucket creation, alias registration)
+    that may happen before the per-role IAM users exist.
+    """
+    from minio import Minio
+
+    secure = os.environ.get("MINIO_SECURE", "false").lower() == "true"
+    return Minio(
+        MINIO_ENDPOINT,
+        access_key=MINIO_ROOT_USER,
+        secret_key=MINIO_ROOT_PASSWORD,
+        secure=secure,
+    )
+
+
+def _ensure_governance_bucket() -> None:
+    """Create the governance bucket if it does not already exist.
+
+    The landing, trusted and exploitation buckets are owned by their
+    respective processing scripts and created on their first run, so
+    only the governance bucket — the destination of the security audit
+    report — is bootstrapped here. Uses the MinIO root credentials
+    because the per-role users may not exist yet on the first run.
+    """
+    from shared.minio_helpers import ensure_bucket
+
+    root_client = _create_root_minio_client()
+    ensure_bucket(root_client, GOVERNANCE_BUCKET, ["security/.keep"])
 
 
 def apply_security_policies() -> list[dict]:
@@ -233,6 +313,14 @@ def apply_security_policies() -> list[dict]:
 
     Returns a list of result dicts for display and reporting.
     """
+    print("  Ensuring governance bucket exists...")
+    try:
+        _ensure_governance_bucket()
+    except Exception as e:
+        print(f"  Governance bucket bootstrap failed: {e}")
+        print("  Make sure MinIO is reachable with MINIO_ACCESS_KEY / MINIO_SECRET_KEY.")
+        raise
+
     print("  Registering MinIO alias...")
     _mc_alias_set()
 
@@ -280,7 +368,7 @@ def apply_security_policies() -> list[dict]:
     return results
 
 
-# ── Verify policies ──────────────────────────────────────────────────────
+# ── Verify policies — test actual read/write access for each role
 
 
 def verify_access(role_name: str, role_config: dict) -> list[dict]:
@@ -350,11 +438,11 @@ def verify_access(role_name: str, role_config: dict) -> list[dict]:
     return checks
 
 
-# ── Save report ──────────────────────────────────────────────────────────
+# ── Save report — persist policy + verification results to MinIO
 
 
 def save_security_report(minio_client, results: list[dict], verification: dict) -> str:
-    """Save security policy report to exploitation-zone governance folder."""
+    """Save security policy report to the governance bucket."""
     from datetime import datetime, timezone
 
     report = {
@@ -365,32 +453,35 @@ def save_security_report(minio_client, results: list[dict], verification: dict) 
 
     payload = json.dumps(report, indent=2, default=str).encode("utf-8")
     minio_client.put_object(
-        EXPLOITATION_BUCKET,
+        GOVERNANCE_BUCKET,
         SECURITY_REPORT_KEY,
         BytesIO(payload),
         length=len(payload),
         content_type="application/json",
     )
-    path = f"{EXPLOITATION_BUCKET}/{SECURITY_REPORT_KEY}"
+    path = f"{GOVERNANCE_BUCKET}/{SECURITY_REPORT_KEY}"
     print(f"\n  Security report saved: {path} ({len(payload) / 1024:.1f} KB)")
     return path
 
 
-# ── Display ──────────────────────────────────────────────────────────────
+# ── Display — print access matrix and verification pass/fail results
 
 
 def display_access_matrix(results: list[dict]) -> None:
     """Print the access control matrix."""
-    width = 62
+    width = 74
     print(f"\n{'═' * width}")
     print("  Access Control Matrix")
     print(f"{'─' * width}")
 
-    header = f"  {'Role':<18} {'Landing':<12} {'Trusted':<12} {'Exploitation':<12}"
+    header = (
+        f"  {'Role':<18} {'Landing':<12} {'Trusted':<12} "
+        f"{'Exploitation':<14} {'Governance':<12}"
+    )
     print(header)
-    print(f"  {'─' * 54}")
+    print(f"  {'─' * 68}")
 
-    all_buckets = [LANDING_BUCKET, TRUSTED_BUCKET, EXPLOITATION_BUCKET]
+    all_buckets = [LANDING_BUCKET, TRUSTED_BUCKET, EXPLOITATION_BUCKET, GOVERNANCE_BUCKET]
 
     for r in results:
         perms = r["permissions"]
@@ -403,7 +494,10 @@ def display_access_matrix(results: list[dict]) -> None:
                 cols.append("R")
             else:
                 cols.append("—")
-        print(f"  {r['role']:<18} {cols[0]:<12} {cols[1]:<12} {cols[2]:<12}")
+        print(
+            f"  {r['role']:<18} {cols[0]:<12} {cols[1]:<12} "
+            f"{cols[2]:<14} {cols[3]:<12}"
+        )
 
     print(f"{'═' * width}\n")
 
@@ -454,7 +548,7 @@ def display_verification(verification: dict) -> None:
     print(f"{'═' * width}\n")
 
 
-# ── Interactive CLI ──────────────────────────────────────────────────────
+# ── Interactive CLI — apply policies, verify access, show matrix
 
 
 def _print_menu() -> None:
@@ -476,10 +570,10 @@ def run_interactive(*, from_orchestrator: bool = False) -> None:
     print("  Data Governance — Data Security (MinIO Policies)")
     print(f"{'─' * width}")
     print("  Role-based access control for pipeline zones:")
-    print("    pipeline_admin → full access (all zones)")
-    print("    data_engineer  → RW landing + trusted, R exploitation")
-    print("    data_scientist → R trusted, RW exploitation")
-    print("    analyst        → R all zones (read-only)")
+    print("    pipeline_admin → full access (all zones + governance)")
+    print("    data_engineer  → RW landing + trusted, R exploitation + governance")
+    print("    data_scientist → R trusted + governance, RW exploitation")
+    print("    analyst        → R all zones + governance (read-only)")
     print(f"{'─' * width}")
     print()
     print("  Requirements:")

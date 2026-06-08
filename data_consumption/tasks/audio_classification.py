@@ -1,12 +1,23 @@
 #!/usr/bin/env python3
 """
-Audio similarity search — record from microphone and find closest matches.
+Audio classification and similarity search — microphone → label + neighbours.
 
 Records 5 seconds of audio from the default microphone, computes a PANNs CNN14
-embedding (2048-dim), and searches the Milvus ``sound_audio_embeddings``
-collection for the most acoustically similar recordings.
+embedding (2048-dim) and serves a two-part answer:
 
-Orchestrator: option 9 → Data consumption → Audio classification.
+  1. The trained audio classifier head (logistic regression on PANNs vectors,
+     persisted to MinIO by classifier_training.py) returns a predicted
+     category together with a calibrated confidence.
+  2. The same embedding is passed to the Milvus ``sound_audio_embeddings``
+     collection, returning the top-k acoustically nearest recordings as
+     supporting evidence behind the prediction.
+
+When the trained head is not yet available (e.g. the exploitation pipeline
+has not run with enough labelled data), the task gracefully falls back to
+ANN-only search.
+
+Orchestrator: option 8 → Data consumption → Audio classification.
+Or in the provided Streamlit dashboard.
 
 Run directly:
     python data_consumption/tasks/audio_classification.py
@@ -34,14 +45,14 @@ except ImportError:
 
 import numpy as np
 
-# ── Constants ──────────────────────────────────────────────────────────────
+# ── Constants
 
 SAMPLE_RATE = 44100
 DURATION = 5
 TOP_K = 5
 
 
-# ── Audio recording ──────────────────────────────────────────────────────
+# ── Audio recording — capture 5 s from the default microphone
 
 
 def record_audio(duration: int = DURATION, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
@@ -73,7 +84,7 @@ def record_audio(duration: int = DURATION, sample_rate: int = SAMPLE_RATE) -> np
     return audio
 
 
-# ── Result display ───────────────────────────────────────────────────────
+# ── Result display — Milvus similarity results
 
 
 def _format_result(rank: int, hit: dict) -> None:
@@ -96,11 +107,26 @@ def _format_result(rank: int, hit: dict) -> None:
     print()
 
 
-def display_results(results: list[dict]) -> None:
-    """Display all search results in a formatted table."""
+def display_results(
+    prediction: tuple[str, float] | None,
+    results: list[dict],
+) -> None:
+    """Display the trained-head prediction and the ANN neighbours."""
     width = 62
     print(f"\n{'═' * width}")
-    print(f"  Audio Similarity Search Results — Top {len(results)}")
+    print("  Audio Classification Results")
+    print(f"{'─' * width}")
+
+    if prediction is not None:
+        label, confidence = prediction
+        print(f"  Predicted category: {label}")
+        print(f"  Confidence:         {confidence:.1%}")
+        print(f"{'─' * width}")
+    else:
+        print("  No trained head available — showing nearest neighbours only.")
+        print(f"{'─' * width}")
+
+    print(f"  Top {len(results)} acoustically similar recordings (supporting evidence)")
     print(f"{'─' * width}")
 
     if not results:
@@ -114,43 +140,92 @@ def display_results(results: list[dict]) -> None:
     print(f"{'═' * width}\n")
 
 
-# ── Search ───────────────────────────────────────────────────────────────
+# ── Search — embed once via PANNs CNN14, then predict + ANN search
 
 
-def search_recorded_audio(
+def classify_recorded_audio(
     audio: np.ndarray,
+    classifier: object | None,
     sample_rate: int = SAMPLE_RATE,
     top_k: int = TOP_K,
-) -> list[dict]:
-    """Embed the recorded audio with PANNs CNN14 and search Milvus."""
-    from milvus_embeddings import connect_milvus, search_similar_sounds
+) -> tuple[tuple[str, float] | None, list[dict]]:
+    """Embed audio once, run the trained head (if available), then ANN search.
+
+    Returns ``(prediction, neighbours)`` where ``prediction`` is
+    ``(label, confidence)`` or ``None`` when the classifier head is absent.
+    """
+    from milvus_embeddings import (
+        compute_audio_embedding,
+        connect_milvus,
+        search_audio_by_embedding,
+    )
+    from classifier_training import predict_with_head
 
     print("  Connecting to Milvus...")
     milvus_client = connect_milvus()
 
     print("  Computing PANNs CNN14 embedding (2048-dim)...")
-    results = search_similar_sounds(milvus_client, audio, sample_rate, top_k=top_k)
+    embedding = compute_audio_embedding(audio, sample_rate)
+
+    prediction: tuple[str, float] | None = None
+    if classifier is not None:
+        try:
+            label, confidence = predict_with_head(classifier, embedding)
+            prediction = (label, confidence)
+            print(f"  Trained head prediction: {label}  ({confidence:.1%} confidence)")
+        except Exception as e:
+            print(f"  Trained head prediction failed: {e}")
+    else:
+        print("  Trained head not loaded — returning nearest neighbours only.")
+
+    print(f"  Searching Milvus for top-{top_k} acoustically similar recordings...")
+    results = search_audio_by_embedding(milvus_client, embedding, top_k=top_k)
     print(f"  Found {len(results)} similar recordings.")
-    return results
+    return prediction, results
 
 
-# ── Interactive CLI ──────────────────────────────────────────────────────
+# ── Interactive CLI — record → embed → search → display loop
 
 
 def run_interactive(*, from_orchestrator: bool = False) -> None:
-    """Main loop: record → search → display → repeat."""
+    """Main loop: record → predict (trained head) + ANN search → display."""
     width = 62
     print(f"\n{'─' * width}")
-    print("  Audio Classification — Similarity Search")
+    print("  Audio Classification — Trained Head + Nearest Neighbours")
     print(f"{'─' * width}")
-    print("  Records 5 seconds of audio from your microphone,")
-    print("  then finds the most similar sounds in the Milvus")
-    print("  audio embedding collection (PANNs CNN14, 2048-dim).")
+    print("  Records 5 seconds of audio from your microphone, computes a")
+    print("  PANNs CNN14 embedding (2048-dim), runs the trained classifier")
+    print("  head for the predicted category, and returns the top-k")
+    print("  acoustically similar recordings as supporting evidence.")
     print(f"{'─' * width}")
     print()
     print("  Requirements:")
     print("    - Milvus running  (docker compose up -d milvus)")
-    print("    - Audio embeddings ingested  (orchestrate → [10])")
+    print("    - Audio embeddings ingested  (orchestrate → [6])")
+    print("    - Trained head at exploitation-zone/models/audio_classifier.joblib")
+    print("      (optional — falls back to ANN-only when missing)")
+    print()
+
+    # Load the trained head once for the whole session. Falls back gracefully
+    # to ANN-only behaviour when the artefact is missing on MinIO.
+    from shared.minio_helpers import create_minio_client
+    from classifier_training import load_classifier_from_minio
+
+    classifier = None
+    try:
+        minio_client = create_minio_client()
+        loaded = load_classifier_from_minio(minio_client, "audio")
+        if loaded is not None:
+            classifier, metrics = loaded
+            n_classes = metrics.get("n_classes", "?")
+            cv_acc = metrics.get("cv_accuracy_mean")
+            cv_str = f"CV acc {cv_acc:.3f}" if isinstance(cv_acc, (int, float)) else "CV acc n/a"
+            print(f"  Loaded trained head — {n_classes} classes, {cv_str}.")
+        else:
+            print("  No trained head found on MinIO — running in ANN-only mode.")
+    except Exception as e:
+        print(f"  Could not load trained head ({e}) — running in ANN-only mode.")
+
     print()
 
     while True:
@@ -171,13 +246,13 @@ def run_interactive(*, from_orchestrator: bool = False) -> None:
             continue
 
         try:
-            results = search_recorded_audio(audio)
+            prediction, results = classify_recorded_audio(audio, classifier)
         except Exception as e:
-            print(f"\n  Search failed: {e}")
+            print(f"\n  Classification failed: {e}")
             print("  Check that Milvus is running and embeddings have been ingested.")
             continue
 
-        display_results(results)
+        display_results(prediction, results)
 
 
 def main() -> None:

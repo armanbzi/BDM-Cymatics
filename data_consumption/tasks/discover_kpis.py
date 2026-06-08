@@ -2,7 +2,8 @@
 """
 Discover defined KPI queries on the exploitation-zone Delta table.
 
-Orchestrator: option 9 → Data consumption → Discover defined queries (KPIs).
+Orchestrator: option 8 → Data consumption → Discover defined queries (KPIs),
+or via Streamlit dashboard.
 
 Run directly:
     python data_consumption/tasks/discover_kpis.py
@@ -33,7 +34,7 @@ from deltalake import DeltaTable
 from shared.sync_delta import OBSERVATIONS_DELTA_PATH, s3_storage_options_readonly
 
 
-# ── KPI helpers ─────────────────────────────────────────────────────────────
+# ── KPI helpers — reusable aggregation utilities
 
 
 def _clean_category(series: pd.Series) -> pd.Series:
@@ -58,6 +59,7 @@ def _frequency_band(hz: float) -> str:
     return "High (1000+ Hz)"
 
 
+# KPI 1 helper: find the single most-repeated peak frequency per category.
 def kpi_most_repeated_frequency_per_category(df: pd.DataFrame) -> pd.DataFrame:
     work = df.copy()
     work["category"] = _clean_category(work["category"])
@@ -103,6 +105,7 @@ def kpi_most_repeated_frequency_per_category(df: pd.DataFrame) -> pd.DataFrame:
     ]
 
 
+# KPI 1: Top N categories ranked by how dominant their most-repeated frequency is.
 def kpi_top_categories_by_frequency_share(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     full = kpi_most_repeated_frequency_per_category(df)
     if full.empty:
@@ -112,6 +115,7 @@ def kpi_top_categories_by_frequency_share(df: pd.DataFrame, top_n: int = 10) -> 
     return out.reset_index(drop=True)
 
 
+# KPI 2: Recordings with the highest combined symmetry + stability scores.
 def kpi_best_cymatics_candidates(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     work = df.copy()
     for col in ("symmetry_score", "pattern_stability_score"):
@@ -140,6 +144,7 @@ def kpi_best_cymatics_candidates(df: pd.DataFrame, top_n: int = 10) -> pd.DataFr
     return out
 
 
+# KPI 3a: Aggregate recording counts into Low / Mid / High frequency bands.
 def kpi_frequency_clusters(df: pd.DataFrame) -> pd.DataFrame:
     work = df.copy()
     work["peak_frequency_hz"] = _clean_peak_frequency_hz(work["peak_frequency_hz"])
@@ -167,6 +172,7 @@ def kpi_frequency_clusters(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("frequency_band").reset_index(drop=True)
 
 
+# KPI 3b: Top N categories within each frequency band.
 def kpi_frequency_clusters_top_categories(
     df: pd.DataFrame, top_categories: int = 3
 ) -> pd.DataFrame:
@@ -209,6 +215,7 @@ def kpi_frequency_clusters_top_categories(
     ]
 
 
+# KPI 4 helper: pairwise frequency distance between every category combination.
 def _all_category_pair_similarities(df: pd.DataFrame) -> pd.DataFrame:
     work = df.copy()
     work["category"] = _clean_category(work["category"])
@@ -240,6 +247,7 @@ def _all_category_pair_similarities(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(pairs).sort_values("frequency_difference_hz").reset_index(drop=True)
 
 
+# KPI 4: Category pairs closest in avg peak freq (each category used at most once).
 def kpi_most_similar_frequency_categories_unique(
     df: pd.DataFrame, top_pairs: int = 10
 ) -> pd.DataFrame:
@@ -266,6 +274,7 @@ def kpi_most_similar_frequency_categories_unique(
     return out
 
 
+# KPI 5: Avg trusted-zone processing duration (seconds) grouped by ingestion source.
 def kpi_avg_processing_time_per_source(df: pd.DataFrame) -> pd.DataFrame:
     work = df.copy()
     work["source"] = _clean_source(work["source"])
@@ -289,6 +298,7 @@ def kpi_avg_processing_time_per_source(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("avg_processing_time_seconds", ascending=False).reset_index(drop=True)
 
 
+# KPI 6: Categories ranked by mean spectral entropy (high = complex / noise-like).
 def kpi_most_complex_categories(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     work = df.copy()
     work["category"] = _clean_category(work["category"])
@@ -309,6 +319,7 @@ def kpi_most_complex_categories(df: pd.DataFrame, top_n: int = 10) -> pd.DataFra
     return out
 
 
+# KPI 7: Categories with highest/lowest mean spectral centroid (bright vs dark timbre).
 def kpi_brightest_darkest_categories(df: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
     work = df.copy()
     work["category"] = _clean_category(work["category"])
@@ -392,7 +403,7 @@ KPI_MENU: dict[str, dict] = {
 }
 
 
-# ── Delta load + CLI ──────────────────────────────────────────────────────────
+# ── Delta load + CLI — read exploitation Delta table and run KPI queries
 
 
 def _exploitation_delta_uri() -> str:

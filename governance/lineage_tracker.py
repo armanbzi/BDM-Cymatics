@@ -8,12 +8,13 @@ across all zones, showing:
   • Which zone(s) the record appears in (Landing → Trusted → Exploitation).
   • What assets were generated at each stage (audio, image, video, embeddings).
   • Timestamps and transformation metadata at each step.
-  • Completeness status — whether the full pipeline has been traversed.
+  • Completeness status — whether the full pipeline has been finished.
 
 The lineage table is built by cross-referencing metadata CSVs from all
 three MinIO buckets and checking Milvus embedding collections.
 
-Orchestrator: option 11 → Data governance → Lineage tracking.
+Orchestrator: option 9 → Data governance → Lineage tracking,
+or via Streamlit dashboard.
 
 Run directly:
     python governance/lineage_tracker.py
@@ -45,7 +46,7 @@ import pandas as pd
 
 from shared.minio_helpers import create_minio_client
 
-# ── Constants ──────────────────────────────────────────────────────────────
+# ── Constants
 
 LANDING_BUCKET = os.environ.get("LANDING_ZONE_BUCKET", "landing-zone")
 TRUSTED_BUCKET = os.environ.get("TRUSTED_ZONE_BUCKET", "trusted-zone")
@@ -55,7 +56,7 @@ METADATA_KEY = "metadata/observations.csv"
 LINEAGE_KEY = "governance/lineage.json"
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────
+# ── Helpers — safe CSV loading and Milvus UUID lookup
 
 
 def _load_csv_safe(minio_client, bucket: str) -> pd.DataFrame:
@@ -103,7 +104,7 @@ def _check_milvus_uuids() -> dict[str, set[str]]:
     return collections
 
 
-# ── Lineage builder ──────────────────────────────────────────────────────
+# ── Lineage builder — cross-reference all zones + Milvus to trace each UUID
 
 
 def build_lineage(minio_client) -> list[dict]:
@@ -112,6 +113,7 @@ def build_lineage(minio_client) -> list[dict]:
     Returns a list of dicts, one per UUID, with zone presence flags,
     asset paths, and transformation metadata.
     """
+    # Step 1: Load metadata CSVs from all three MinIO zones.
     print("  Loading metadata from all zones...")
 
     landing_df = _load_csv_safe(minio_client, LANDING_BUCKET)
@@ -122,7 +124,7 @@ def build_lineage(minio_client) -> list[dict]:
     print(f"    Trusted:      {len(trusted_df)} rows")
     print(f"    Exploitation: {len(exploit_df)} rows")
 
-    # Index by UUID for fast lookup.
+    # Step 2: Index each zone's rows by UUID for fast lookup.
     landing_idx = {}
     if not landing_df.empty and "uuid" in landing_df.columns:
         for _, row in landing_df.iterrows():
@@ -144,7 +146,7 @@ def build_lineage(minio_client) -> list[dict]:
             if uid:
                 exploit_idx[uid] = row.to_dict()
 
-    # Check Milvus embeddings.
+    # Step 3: Check which UUIDs have embeddings in the 3 Milvus collections.
     print("  Checking Milvus embedding collections...")
     milvus_uuids = _check_milvus_uuids()
     audio_emb_uuids = milvus_uuids.get("sound_audio_embeddings", set())
@@ -155,7 +157,7 @@ def build_lineage(minio_client) -> list[dict]:
     print(f"    Text embeddings:     {len(text_emb_uuids)} UUIDs")
     print(f"    Cymatics embeddings: {len(cymatics_emb_uuids)} UUIDs")
 
-    # Collect all UUIDs.
+    # Step 4: Union all UUIDs across zones + embeddings, then build lineage per record.
     all_uuids = sorted(
         set(landing_idx.keys())
         | set(trusted_idx.keys())
@@ -264,7 +266,7 @@ def build_lineage(minio_client) -> list[dict]:
     return lineage
 
 
-# ── Persist lineage ──────────────────────────────────────────────────────
+# ── Persist lineage — save full lineage JSON to MinIO for auditing
 
 
 def save_lineage(minio_client, lineage: list[dict]) -> str:
@@ -284,7 +286,7 @@ def save_lineage(minio_client, lineage: list[dict]) -> str:
     return path
 
 
-# ── Display ──────────────────────────────────────────────────────────────
+# ── Display — summary stats + per-record transformation chain
 
 
 def display_lineage(lineage: list[dict]) -> None:
@@ -380,7 +382,7 @@ def display_lineage_for_uuid(lineage: list[dict], target_uuid: str) -> None:
     print(f"\n{'═' * width}\n")
 
 
-# ── Interactive CLI ──────────────────────────────────────────────────────
+# ── Interactive CLI — build lineage, look up UUID, show completeness
 
 
 def _print_menu() -> None:

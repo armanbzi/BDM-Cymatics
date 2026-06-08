@@ -2,8 +2,12 @@
 """
 Streamlit dashboard — BDM Cymatics data consumption layer.
 
-Provides an interactive web UI for the exploitation-zone KPIs, with
-appropriate chart types for each metric.
+Here we provides an interactive web UI for the Data-Consumption tasks & governance:
+ - pre-defined KPI queries with appropriate charts for each.
+ - Interaction with audio classification.
+ - Interaction with Cymatics classification.
+ - Interaction with metadata search assistant.
+ - Apply governance and view results.
 
 Run directly:
     streamlit run data_consumption/data_consumption_all.py
@@ -58,7 +62,7 @@ from tasks.discover_kpis import (
 _MILVUS_AVAILABLE = None
 
 
-# ── Page config ────────────────────────────────────────────────────────────
+# ── Page config — set Streamlit page title, icon, and layout
 
 st.set_page_config(
     page_title="BDM Cymatics — Dashboard",
@@ -67,7 +71,7 @@ st.set_page_config(
 )
 
 
-# ── Data loading (cached) ─────────────────────────────────────────────────
+# ── Data loading (cached) — read exploitation Delta table via MinIO with 120 s TTL
 
 
 @st.cache_data(ttl=120, show_spinner="Loading exploitation-zone Delta table...")
@@ -107,7 +111,7 @@ def _image_path_map() -> dict[str, str]:
     return {}
 
 
-# ── KPI chart renderers ───────────────────────────────────────────────────
+# ── KPI chart renders — one function per KPI, each builds a Plotly figure
 
 
 def _render_frequency_share(obs: pd.DataFrame) -> None:
@@ -444,7 +448,7 @@ def _render_brightness(obs: pd.DataFrame) -> None:
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-# ── KPI registry (mirrors discover_kpis.KPI_MENU) ────────────────────────
+# ── KPI registry — maps KPI number to its render function (mirrors discover_kpis.KPI_MENU)
 
 KPI_RENDERERS: dict[str, dict] = {
     "1": {
@@ -478,7 +482,7 @@ KPI_RENDERERS: dict[str, dict] = {
 }
 
 
-# ── Audio classification (Milvus similarity search) ─────────────────────
+# ── Audio classification — record mic → PANNs CNN14 embedding → Milvus ANN search
 
 
 def _check_milvus() -> bool:
@@ -512,11 +516,11 @@ def _render_audio_classification() -> None:
         st.warning(
             "Milvus is not reachable. Start it with "
             "`docker compose up -d milvus` and ensure audio embeddings "
-            "have been ingested (orchestrate → [10])."
+            "have been ingested (orchestrate → [6])."
         )
         return
 
-    # ── Audio input ───────────────────────────────────────────────
+    # ── Audio input
     col_rec, col_upload = st.columns(2)
 
     audio_bytes = None
@@ -544,14 +548,14 @@ def _render_audio_classification() -> None:
         st.info("Record or upload audio to begin the similarity search.")
         return
 
-    # ── Playback ──────────────────────────────────────────────────
+    # ── Playback
     st.audio(audio_bytes, format="audio/wav")
     st.markdown(
         f"**Source:** {audio_source} &nbsp;|&nbsp; "
         f"**Size:** {len(audio_bytes) / 1024:.1f} KB"
     )
 
-    # ── Search ────────────────────────────────────────────────────
+    # ── Search
     top_k = st.slider("Number of results", min_value=1, max_value=20, value=5)
 
     if st.button("Find similar sounds", type="primary"):
@@ -582,7 +586,7 @@ def _render_audio_classification() -> None:
 
         img_map = _image_path_map()
 
-        # ── Results ───────────────────────────────────────────────
+        # ── Results
         for i, hit in enumerate(results):
             entity = hit["entity"]
             distance = hit["distance"]
@@ -624,7 +628,7 @@ def _render_audio_classification() -> None:
                 st.divider()
 
 
-# ── Cymatics classification (CLIP pattern search) ───────────────────────
+# ── Cymatics classification — image/audio/text → CLIP ViT-B/32 → Milvus pattern search
 
 
 def _load_cymatics_image(image_path: str) -> bytes | None:
@@ -714,11 +718,11 @@ def _render_cymatics_classification() -> None:
         st.warning(
             "Milvus is not reachable. Start it with "
             "`docker compose up -d milvus` and ensure cymatics embeddings "
-            "have been ingested (orchestrate → [10])."
+            "have been ingested (orchestrate → [6])."
         )
         return
 
-    # ── Search mode selector ─────────────────────────────────────
+    # ── Search mode selector
     mode = st.radio(
         "Search mode",
         options=[
@@ -736,7 +740,7 @@ def _render_cymatics_classification() -> None:
         key="cymatics_top_k",
     )
 
-    # ── Mode 1: Upload image ─────────────────────────────────────
+    # ── Mode 1: Upload image
     if mode == "Upload image":
         uploaded = st.file_uploader(
             "Upload a cymatics or pattern image",
@@ -764,7 +768,7 @@ def _render_cymatics_classification() -> None:
                     return
             _render_cymatics_results(results)
 
-    # ── Mode 2: Record audio → generate cymatics → search ────────
+    # ── Mode 2: Record audio → generate cymatics → search
     elif mode == "Record audio → generate cymatics":
         col_rec, col_upload = st.columns(2)
 
@@ -824,7 +828,7 @@ def _render_cymatics_classification() -> None:
 
             _render_cymatics_results(results)
 
-    # ── Mode 3: Text query ───────────────────────────────────────
+    # ── Mode 3: Text query
     else:
         st.markdown(
             "Describe the pattern you're looking for — CLIP maps text and "
@@ -874,7 +878,7 @@ def _render_cymatics_classification() -> None:
             _render_cymatics_results(results)
 
 
-# ── Metadata search (text embeddings) ─────────────────────────────────
+# ── Metadata search — natural-language query → MiniLM text embedding → Milvus ANN
 
 
 def _render_metadata_search() -> None:
@@ -890,11 +894,11 @@ def _render_metadata_search() -> None:
         st.warning(
             "Milvus is not reachable. Start it with "
             "`docker compose up -d milvus` and ensure text embeddings "
-            "have been ingested (orchestrate → [10])."
+            "have been ingested (orchestrate → [6])."
         )
         return
 
-    # ── Query input ──────────────────────────────────────────────
+    # ── Query input
     if "_meta_pending_query" in st.session_state:
         st.session_state["meta_text_query"] = st.session_state.pop(
             "_meta_pending_query"
@@ -992,7 +996,7 @@ def _render_metadata_search() -> None:
                 st.divider()
 
 
-# ── Data governance (quality + lineage) ───────────────────────────────
+# ── Data governance — run quality checks (Great Expectations) and display lineage
 
 
 def _render_governance() -> None:
@@ -1005,7 +1009,7 @@ def _render_governance() -> None:
 
     mode = st.radio(
         "Governance task",
-        options=["Quality Checks", "Lineage Tracking", "Data Security"],
+        options=["Quality Checks", "Lineage Tracking", "Data Security", "Data Catalog"],
         horizontal=True,
         key="gov_mode",
     )
@@ -1229,8 +1233,7 @@ def _render_governance() -> None:
             if total > show_count:
                 st.info(f"Showing first {show_count} of {total} records.")
 
-    else:
-        # Data Security mode.
+    elif mode == "Data Security":
         st.markdown(
             "Role-based access control for MinIO pipeline zones. "
             "Creates IAM users and attaches policies per role."
@@ -1364,14 +1367,83 @@ def _render_governance() -> None:
                 else:
                     st.error("Some access checks failed.")
 
+    elif mode == "Data Catalog":
+        st.markdown(
+            "Registers the five data products of the Sound Analysis & Cymatics "
+            "domain (ownership, storage, contract, consumers, lineage) and "
+            "monitors their live health. Persisted as a DCAT JSON-LD catalog in "
+            "the governance bucket."
+        )
 
-# ── Main layout ───────────────────────────────────────────────────────────
+        if st.button("Build catalog", type="primary", key="gov_catalog_btn"):
+            with st.spinner("Probing data-product health across MinIO and Milvus..."):
+                try:
+                    sys.path.insert(
+                        0, str(Path(__file__).resolve().parents[1] / "governance"),
+                    )
+                    from data_catalog import build_catalog, save_catalog
+                    from shared.minio_helpers import create_minio_client
+
+                    minio_client = create_minio_client()
+                    catalog = build_catalog(minio_client)
+                    save_catalog(minio_client, catalog)
+                except Exception as e:
+                    st.error(f"Data catalog failed: {e}")
+                    return
+
+            products = catalog["products"]
+            available = sum(1 for p in products if p["health"]["status"] == "available")
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Data products", catalog["n_products"])
+            col2.metric("Available", available)
+            col3.metric("Domain", catalog["domain"])
+
+            st.divider()
+
+            status_icon = {
+                "available": "✅",
+                "empty": "⚪",
+                "partial": "🟠",
+                "missing": "❌",
+                "unreachable": "❔",
+            }
+
+            catalog_rows = [
+                {
+                    "Product": p["id"],
+                    "Type": p["type"],
+                    "Owner": p["owner"],
+                    "Storage": p["storage"]["system"],
+                    "Status": f"{status_icon.get(p['health']['status'], '·')} "
+                              f"{p['health']['status']}",
+                    "Detail": p["health"]["detail"],
+                }
+                for p in products
+            ]
+            st.dataframe(pd.DataFrame(catalog_rows), use_container_width=True)
+
+            for p in products:
+                with st.expander(f"{p['id']} — {p['title']}"):
+                    st.markdown(f"**Owner:** `{p['owner']}`")
+                    st.markdown(f"**Description:** {p['description']}")
+                    st.markdown(
+                        f"**Storage:** {p['storage']['system']} "
+                        f"(`{p['storage']['location']}`, {p['storage']['format']})"
+                    )
+                    st.markdown(f"**Schema:** {p['schema']}")
+                    st.markdown(f"**Data contract:** {p['data_contract']}")
+                    st.markdown(f"**Derived from:** {', '.join(p['derived_from'])}")
+                    st.markdown(f"**Consumers:** {', '.join(p['consumers'])}")
+
+
+# ── Main layout — sidebar navigation + tab routing to each consumption task
 
 
 def main() -> None:
     st.title("BDM Cymatics — Data Consumption Dashboard")
 
-    # ── Top-level tabs ────────────────────────────────────────────────
+    # ── Top-level tabs
     tab_kpis, tab_audio, tab_cymatics, tab_metadata, tab_gov = st.tabs([
         "KPI Dashboard",
         "Audio Classification",
@@ -1380,7 +1452,7 @@ def main() -> None:
         "Data Governance",
     ])
 
-    # ── Tab 1: KPI Dashboard ──────────────────────────────────────────
+    # ── Tab 1: KPI Dashboard
     with tab_kpis:
         obs, uri, version = _try_load_data()
         row_count = len(obs)
@@ -1392,7 +1464,7 @@ def main() -> None:
         )
         st.divider()
 
-        # ── Sidebar: KPI selector ─────────────────────────────────────
+        # ── Sidebar: KPI selector
         with st.sidebar:
             st.header("KPI Selection")
             selected = st.radio(
@@ -1408,7 +1480,7 @@ def main() -> None:
                 _load_data.clear()
                 st.rerun()
 
-        # ── Render selected KPI(s) ────────────────────────────────────
+        # ── Render selected KPI(s)
         if selected == "All KPIs":
             for key in sorted(KPI_RENDERERS.keys(), key=int):
                 KPI_RENDERERS[key]["renderer"](obs)
@@ -1417,19 +1489,19 @@ def main() -> None:
             key = selected.split(".")[0]
             KPI_RENDERERS[key]["renderer"](obs)
 
-    # ── Tab 2: Audio Classification ───────────────────────────────────
+    # ── Tab 2: Audio Classification
     with tab_audio:
         _render_audio_classification()
 
-    # ── Tab 3: Cymatics Classification ────────────────────────────────
+    # ── Tab 3: Cymatics Classification
     with tab_cymatics:
         _render_cymatics_classification()
 
-    # ── Tab 4: Metadata Search ───────────────────────────────────────
+    # ── Tab 4: Metadata Search
     with tab_metadata:
         _render_metadata_search()
 
-    # ── Tab 5: Data Governance ───────────────────────────────────────
+    # ── Tab 5: Data Governance
     with tab_gov:
         _render_governance()
 

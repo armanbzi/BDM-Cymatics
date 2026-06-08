@@ -16,7 +16,8 @@ Validates data quality at each zone boundary:
   Checkpoint 3  Exploitation (embeddings)
     • Embedding vectors correct dimensionality, L2-normalised, not all zeros.
 
-Orchestrator: option 11 → Data governance → Data quality checks.
+Orchestrator: option 9 → Data governance → Data quality checks,
+or via Streamlit dashboard.
 
 Run directly:
     python governance/data_quality.py
@@ -50,7 +51,7 @@ import pandas as pd
 
 from shared.minio_helpers import create_minio_client
 
-# ── Constants ──────────────────────────────────────────────────────────────
+# ── Constants
 
 LANDING_BUCKET = os.environ.get("LANDING_ZONE_BUCKET", "landing-zone")
 TRUSTED_BUCKET = os.environ.get("TRUSTED_ZONE_BUCKET", "trusted-zone")
@@ -64,7 +65,7 @@ TEXT_EMBEDDING_DIM = 384
 CYMATICS_EMBEDDING_DIM = 512
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────
+# ── Helpers — MinIO object checks (existence, size, WAV/PNG header)
 
 
 def _load_csv(minio_client, bucket: str) -> pd.DataFrame:
@@ -137,7 +138,7 @@ def _png_dimensions(minio_client, bucket: str, key: str) -> tuple[int, int]:
         return (0, 0)
 
 
-# ── Result display ───────────────────────────────────────────────────────
+# ── Result display — PASS/FAIL formatting and summary printer
 
 
 def _print_section(title: str) -> None:
@@ -192,7 +193,7 @@ def save_quality_report(minio_client, results: list[dict]) -> str:
     return path
 
 
-# ── Checkpoint 1: Landing → Trusted ──────────────────────────────────────
+# ── Checkpoint 1: Landing → Trusted
 
 
 def validate_landing_zone(minio_client) -> list[dict]:
@@ -204,7 +205,7 @@ def validate_landing_zone(minio_client) -> list[dict]:
 
     results: list[dict] = []
 
-    # ── Structured checks via Great Expectations ─────────────────
+    # ── Structured checks via Great Expectations
     context = gx.get_context()
     data_source = context.data_sources.add_pandas("landing_ds")
     data_asset = data_source.add_dataframe_asset("landing_observations")
@@ -275,7 +276,7 @@ def validate_landing_zone(minio_client) -> list[dict]:
         for rec in failed_records:
             print(f"      → uuid={rec.get('uuid','?')[:12]}…  value={rec.get('value')}")
 
-    # ── Unstructured checks: audio file integrity ────────────────
+    # ── Unstructured checks: audio file integrity
     _print_section("Checkpoint 1 — Audio File Integrity")
 
     audio_paths = df["audio_path"].dropna().tolist()
@@ -321,7 +322,7 @@ def validate_landing_zone(minio_client) -> list[dict]:
     return results
 
 
-# ── Checkpoint 2: Trusted → Exploitation ─────────────────────────────────
+# ── Checkpoint 2: Trusted → Exploitation
 
 
 def validate_trusted_zone(minio_client) -> list[dict]:
@@ -333,7 +334,7 @@ def validate_trusted_zone(minio_client) -> list[dict]:
 
     results: list[dict] = []
 
-    # ── Structured checks via Great Expectations ─────────────────
+    # ── Structured checks via Great Expectations
     context = gx.get_context()
     data_source = context.data_sources.add_pandas("trusted_ds")
     data_asset = data_source.add_dataframe_asset("trusted_observations")
@@ -417,7 +418,7 @@ def validate_trusted_zone(minio_client) -> list[dict]:
         for rec in failed_records:
             print(f"      → uuid={rec.get('uuid','?')[:12]}…  value={rec.get('value')}")
 
-    # ── Unstructured checks: image integrity ─────────────────────
+    # ── Unstructured checks: image integrity
     _print_section("Checkpoint 2 — Cymatics Image Integrity")
 
     image_paths = df["image_path"].dropna().tolist()
@@ -460,7 +461,7 @@ def validate_trusted_zone(minio_client) -> list[dict]:
     results.append({"name": f"Image resolution {EXPECTED_IMG_RES}×{EXPECTED_IMG_RES}", "passed": res_pass, "failed": res_fail, "failed_records": res_failed})
     _print_result(f"Image resolution {EXPECTED_IMG_RES}×{EXPECTED_IMG_RES}", res_pass, res_fail, sample_size)
 
-    # ── Unstructured checks: video integrity ─────────────────────
+    # ── Unstructured checks: video integrity
     _print_section("Checkpoint 2 — Cymatics Video Integrity")
 
     video_paths = df["video_path"].dropna().tolist()
@@ -496,7 +497,7 @@ def validate_trusted_zone(minio_client) -> list[dict]:
     return results
 
 
-# ── Checkpoint 3: Exploitation (embeddings) ──────────────────────────────
+# ── Checkpoint 3: Exploitation (embeddings)
 
 
 def validate_exploitation_zone(minio_client) -> list[dict]:
@@ -508,7 +509,7 @@ def validate_exploitation_zone(minio_client) -> list[dict]:
 
     results: list[dict] = []
 
-    # ── Structured checks via Great Expectations ─────────────────
+    # ── Structured checks via Great Expectations
     context = gx.get_context()
     data_source = context.data_sources.add_pandas("exploitation_ds")
     data_asset = data_source.add_dataframe_asset("exploitation_observations")
@@ -587,7 +588,7 @@ def validate_exploitation_zone(minio_client) -> list[dict]:
         for rec in failed_records:
             print(f"      → uuid={rec.get('uuid','?')[:12]}…  value={rec.get('value')}")
 
-    # ── Embedding sanity checks (Milvus) ─────────────────────────
+    # ── Embedding sanity checks (Milvus)
     _print_section("Checkpoint 3 — Embedding Sanity (Milvus)")
 
     try:
@@ -652,7 +653,7 @@ def validate_exploitation_zone(minio_client) -> list[dict]:
     return results
 
 
-# ── Interactive CLI ──────────────────────────────────────────────────────
+# ── Interactive CLI — run all 3 checkpoints sequentially, save report
 
 
 def run_interactive(*, from_orchestrator: bool = False) -> None:
@@ -679,7 +680,7 @@ def run_interactive(*, from_orchestrator: bool = False) -> None:
 
     all_results: list[dict] = []
 
-    # ── Run checkpoints ──────────────────────────────────────────
+    # ── Run checkpoints
     try:
         all_results.extend(validate_landing_zone(minio_client))
     except Exception as e:
@@ -695,7 +696,7 @@ def run_interactive(*, from_orchestrator: bool = False) -> None:
     except Exception as e:
         print(f"\n  Exploitation zone validation failed: {e}")
 
-    # ── Summary & persist ──────────────────────────────────────
+    # ── Summary & persist
     _print_summary(all_results)
     save_quality_report(minio_client, all_results)
 

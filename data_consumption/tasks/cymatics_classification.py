@@ -1,13 +1,25 @@
 #!/usr/bin/env python3
 """
-Cymatics pattern search — find similar visual patterns via CLIP embeddings.
+Cymatics classification and pattern search — image / audio / text → results.
 
 Three search modes:
-  1. Upload an image   → CLIP image embedding → Milvus ANN search.
-  2. Record 5 s audio  → generate cymatics image → CLIP → Milvus.
-  3. Text query         → CLIP text embedding → Milvus (text-to-image).
+  1. Upload an image   → CLIP image embedding → trained head + ANN.
+  2. Record 5 s audio  → generate cymatics image → CLIP → trained head + ANN.
+  3. Text query         → CLIP text embedding → ANN-only (retrieval).
 
-Orchestrator: option 9 → Data consumption → Cymatics classification.
+For modes 1 and 2 the resulting 512-dim CLIP embedding is fed both to the
+trained cymatics classifier head (logistic regression on CLIP vectors,
+persisted to MinIO by classifier_training.py) and to the Milvus
+``sound_cymatics_embeddings`` collection. The result is a predicted category
+with calibrated confidence plus the top-k visually similar patterns as
+supporting evidence. Mode 3 keeps retrieval-only behaviour because the
+classifier head is intentionally not trained on text embeddings.
+
+When the trained head is not yet available, modes 1 and 2 fall back to
+ANN-only behaviour.
+
+Orchestrator: option 8 → Data consumption → Cymatics classification,
+Or in the provided Streamlit dashboard.
 
 Run directly:
     python data_consumption/tasks/cymatics_classification.py
@@ -36,7 +48,7 @@ except ImportError:
 
 import numpy as np
 
-# ── Constants ──────────────────────────────────────────────────────────────
+# ── Constants
 
 SAMPLE_RATE = 44100
 DURATION = 5
@@ -45,8 +57,7 @@ IMG_SIM = 900
 IMG_RES = 2048
 
 
-# ── Audio recording ──────────────────────────────────────────────────────
-
+# ── Audio recording — capture 5 s mono from the default microphone
 
 def record_audio(duration: int = DURATION, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
     """Record *duration* seconds of mono audio from the default microphone.
@@ -76,7 +87,7 @@ def record_audio(duration: int = DURATION, sample_rate: int = SAMPLE_RATE) -> np
     return audio
 
 
-# ── Cymatics image generation ────────────────────────────────────────────
+# ── Cymatics image generation — replicate trusted-zone pipeline to produce a PNG
 
 
 def generate_cymatics_image(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bytes:
@@ -102,13 +113,13 @@ def generate_cymatics_image(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -
         harmonic_dominant_freq,
     )
 
-    # Normalise to float64 [-1, 1].
+    # Step 1: Normalise to float64 [-1, 1].
     audio = audio.astype(np.float64)
     pk = np.max(np.abs(audio))
     if pk > 1e-6:
         audio /= pk
 
-    # Detect dominant frequency and find best 0.25 s chunk.
+    # Step 2: Detect dominant frequency and find best 0.25 s chunk.
     candidates = build_window_candidates(audio, sample_rate)
     dom_freq = harmonic_dominant_freq(
         candidates, max_harmonics=4, use_energy_weight=True,
@@ -131,7 +142,7 @@ def generate_cymatics_image(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -
 
     print(f"  Detected peak frequency: {peak_freq} Hz")
 
-    # Build simulation geometry.
+    # Step 3: Build simulation geometry and compute interference patterns.
     iz = build_zones(IMG_SIM)
     i_sources = build_zone_sources(IMG_SIM, iz)
 
@@ -146,25 +157,26 @@ def generate_cymatics_image(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -
         )
         img_zone_br.append(br)
 
+    # Step 4: Render composite image and upscale to 2048×2048.
     raw_img = render_composite(img_zone_br, iz, 0.0, IMG_SIM)
     img = cv2.resize(raw_img, (IMG_RES, IMG_RES), interpolation=cv2.INTER_LANCZOS4)
 
-    # Glow post-processing (matches trusted zone).
+    # Step 5: Glow post-processing (matches trusted zone).
     glow = cv2.GaussianBlur(img, (0, 0), sigmaX=14)
     img = cv2.addWeighted(img, 0.82, glow, 0.30, 0)
 
-    # Encode to PNG bytes.
+    # Step 6: Encode to PNG bytes for CLIP embedding.
     success, buf = cv2.imencode(".png", img)
     if not success:
         raise RuntimeError("Failed to encode cymatics image to PNG.")
     return bytes(buf)
 
 
-# ── Result display ───────────────────────────────────────────────────────
+# ── Result display — format Milvus CLIP similarity hits
 
 
 def _format_result(rank: int, hit: dict) -> None:
-    """Pretty-print a single search result."""
+    """print a single search result."""
     entity = hit["entity"]
     distance = hit["distance"]
 
@@ -185,11 +197,25 @@ def _format_result(rank: int, hit: dict) -> None:
     print()
 
 
-def display_results(results: list[dict], title: str) -> None:
-    """Display all search results in a formatted table."""
+def display_results(
+    results: list[dict],
+    title: str,
+    *,
+    prediction: tuple[str, float] | None = None,
+) -> None:
+    """Display the trained-head prediction (if any) and the ANN neighbours."""
     width = 62
     print(f"\n{'═' * width}")
-    print(f"  {title} — Top {len(results)}")
+    print(f"  {title}")
+    print(f"{'─' * width}")
+
+    if prediction is not None:
+        label, confidence = prediction
+        print(f"  Predicted category: {label}")
+        print(f"  Confidence:         {confidence:.1%}")
+        print(f"{'─' * width}")
+
+    print(f"  Top {len(results)} visually similar patterns (supporting evidence)")
     print(f"{'─' * width}")
 
     if not results:
@@ -203,7 +229,7 @@ def display_results(results: list[dict], title: str) -> None:
     print(f"{'═' * width}\n")
 
 
-# ── Search modes ─────────────────────────────────────────────────────────
+# ── Search modes — image upload / recorded audio / text query → CLIP → Milvus
 
 
 def _connect_milvus():
@@ -213,22 +239,57 @@ def _connect_milvus():
     return connect_milvus()
 
 
-def search_by_image_path(milvus_client, image_path: str, top_k: int = TOP_K) -> list[dict]:
-    """Load a local image file and search by CLIP image embedding."""
-    from milvus_embeddings import search_similar_patterns
+def _classify_image_bytes(
+    milvus_client,
+    classifier: object | None,
+    image_bytes: bytes,
+    top_k: int = TOP_K,
+) -> tuple[tuple[str, float] | None, list[dict]]:
+    """Embed CLIP once, run the trained head (if available), then ANN search."""
+    from milvus_embeddings import (
+        compute_cymatics_embedding,
+        search_cymatics_by_embedding,
+    )
+    from classifier_training import predict_with_head
 
+    print("  Computing CLIP image embedding (512-dim)...")
+    embedding = compute_cymatics_embedding(image_bytes)
+
+    prediction: tuple[str, float] | None = None
+    if classifier is not None:
+        try:
+            label, confidence = predict_with_head(classifier, embedding)
+            prediction = (label, confidence)
+            print(f"  Trained head prediction: {label}  ({confidence:.1%} confidence)")
+        except Exception as e:
+            print(f"  Trained head prediction failed: {e}")
+    else:
+        print("  Trained head not loaded — returning nearest neighbours only.")
+
+    print(f"  Searching Milvus for top-{top_k} visually similar patterns...")
+    results = search_cymatics_by_embedding(milvus_client, embedding, top_k=top_k)
+    return prediction, results
+
+
+def classify_by_image_path(
+    milvus_client,
+    classifier: object | None,
+    image_path: str,
+    top_k: int = TOP_K,
+) -> tuple[tuple[str, float] | None, list[dict]]:
+    """Load a local image file, classify with the head and ANN-search."""
     with open(image_path, "rb") as f:
         image_bytes = f.read()
-
     print(f"  Image: {image_path} ({len(image_bytes) / 1024:.1f} KB)")
-    print("  Computing CLIP image embedding (512-dim)...")
-    return search_similar_patterns(milvus_client, image_bytes, top_k=top_k)
+    return _classify_image_bytes(milvus_client, classifier, image_bytes, top_k=top_k)
 
 
-def search_by_recorded_audio(milvus_client, top_k: int = TOP_K) -> list[dict]:
-    """Record audio, generate cymatics image, search by CLIP image embedding."""
-    from milvus_embeddings import search_similar_patterns
-
+def classify_by_recorded_audio(
+    milvus_client,
+    classifier: object | None,
+    top_k: int = TOP_K,
+) -> tuple[tuple[str, float] | None, list[dict]]:
+    """Record audio, generate cymatics image, classify + ANN-search via CLIP."""
     audio = record_audio()
 
     print("\n  Generating cymatics pattern from recorded audio...")
@@ -241,12 +302,17 @@ def search_by_recorded_audio(milvus_client, top_k: int = TOP_K) -> list[dict]:
         f.write(image_bytes)
     print(f"  Preview saved: {preview_path}")
 
-    print("  Computing CLIP image embedding (512-dim)...")
-    return search_similar_patterns(milvus_client, image_bytes, top_k=top_k)
+    return _classify_image_bytes(milvus_client, classifier, image_bytes, top_k=top_k)
 
 
 def search_by_text_query(milvus_client, query: str, top_k: int = TOP_K) -> list[dict]:
-    """Search cymatics patterns using a natural-language description."""
+    """Search cymatics patterns using a natural-language description.
+
+    Retrieval-only by design — the classifier head is intentionally not
+    trained on text embeddings (the trained heads operate on CLIP image
+    embeddings; text queries share the CLIP latent space and are matched
+    by cosine similarity).
+    """
     from milvus_embeddings import search_patterns_by_text
 
     print(f"  Query: \"{query}\"")
@@ -254,7 +320,7 @@ def search_by_text_query(milvus_client, query: str, top_k: int = TOP_K) -> list[
     return search_patterns_by_text(milvus_client, query, top_k=top_k)
 
 
-# ── Interactive CLI ──────────────────────────────────────────────────────
+# ── Interactive CLI — select search mode, execute, display results
 
 
 def _print_menu() -> None:
@@ -270,18 +336,21 @@ def _print_menu() -> None:
 
 
 def run_interactive(*, from_orchestrator: bool = False) -> None:
-    """Main loop: choose mode → search → display → repeat."""
+    """Main loop: choose mode → predict (trained head) + ANN search → display."""
     width = 62
     print(f"\n{'─' * width}")
-    print("  Cymatics Classification — Pattern Search")
+    print("  Cymatics Classification — Trained Head + Nearest Neighbours")
     print(f"{'─' * width}")
-    print("  Find similar cymatics patterns using CLIP ViT-B/32")
-    print("  embeddings on the Milvus cymatics collection.")
+    print("  Returns a predicted cymatics category with calibrated confidence")
+    print("  (image and audio modes), plus the top-k visually similar patterns")
+    print("  retrieved from the Milvus cymatics collection.")
     print(f"{'─' * width}")
     print()
     print("  Requirements:")
     print("    - Milvus running  (docker compose up -d milvus)")
-    print("    - Cymatics embeddings ingested  (orchestrate → [10])")
+    print("    - Cymatics embeddings ingested  (orchestrate → [6])")
+    print("    - Trained head at exploitation-zone/models/cymatics_classifier.joblib")
+    print("      (optional — modes 1 and 2 fall back to ANN-only when missing)")
     print()
 
     try:
@@ -292,6 +361,28 @@ def run_interactive(*, from_orchestrator: bool = False) -> None:
         if not from_orchestrator:
             raise SystemExit(1) from e
         return
+
+    # Load the trained cymatics head once for the whole session. Falls back
+    # gracefully to ANN-only behaviour when the artefact is missing on MinIO.
+    from shared.minio_helpers import create_minio_client
+    from classifier_training import load_classifier_from_minio
+
+    classifier = None
+    try:
+        minio_client = create_minio_client()
+        loaded = load_classifier_from_minio(minio_client, "cymatics")
+        if loaded is not None:
+            classifier, metrics = loaded
+            n_classes = metrics.get("n_classes", "?")
+            cv_acc = metrics.get("cv_accuracy_mean")
+            cv_str = f"CV acc {cv_acc:.3f}" if isinstance(cv_acc, (int, float)) else "CV acc n/a"
+            print(f"  Loaded trained head — {n_classes} classes, {cv_str}.")
+        else:
+            print("  No trained head found on MinIO — modes 1 and 2 run in ANN-only mode.")
+    except Exception as e:
+        print(f"  Could not load trained head ({e}) — modes 1 and 2 run in ANN-only mode.")
+
+    print()
 
     while True:
         _print_menu()
@@ -304,7 +395,8 @@ def run_interactive(*, from_orchestrator: bool = False) -> None:
         if choice in ("b", "q", "quit", "exit", ""):
             break
 
-        results = None
+        prediction: tuple[str, float] | None = None
+        results: list[dict] | None = None
 
         if choice == "1":
             try:
@@ -320,16 +412,20 @@ def run_interactive(*, from_orchestrator: bool = False) -> None:
                 print(f"  File not found: {path}")
                 continue
             try:
-                results = search_by_image_path(milvus_client, path)
+                prediction, results = classify_by_image_path(
+                    milvus_client, classifier, path,
+                )
             except Exception as e:
-                print(f"\n  Image search failed: {e}")
+                print(f"\n  Image classification failed: {e}")
                 continue
 
         elif choice == "2":
             try:
-                results = search_by_recorded_audio(milvus_client)
+                prediction, results = classify_by_recorded_audio(
+                    milvus_client, classifier,
+                )
             except Exception as e:
-                print(f"\n  Audio search failed: {e}")
+                print(f"\n  Audio classification failed: {e}")
                 continue
 
         elif choice == "3":
@@ -353,11 +449,14 @@ def run_interactive(*, from_orchestrator: bool = False) -> None:
 
         if results is not None:
             titles = {
-                "1": "Image Pattern Search Results",
-                "2": "Audio → Cymatics Pattern Search Results",
-                "3": "Text → Pattern Search Results",
+                "1": "Image Pattern Classification Results",
+                "2": "Audio → Cymatics Classification Results",
+                "3": "Text → Pattern Search Results (retrieval only)",
             }
-            display_results(results, titles.get(choice, "Search Results"))
+            display_results(
+                results, titles.get(choice, "Search Results"),
+                prediction=prediction,
+            )
 
 
 def main() -> None:

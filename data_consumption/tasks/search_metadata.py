@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Metadata semantic search — natural-language queries over sound metadata.
+Metadata semantic search — natural-language queries over our sound-cymatics metadata.
 
 Uses the all-MiniLM-L6-v2 text embeddings in the Milvus
 ``sound_text_embeddings`` collection to find recordings whose
-auto-generated descriptions best match a free-form question.
+auto-generated descriptions best match a question.
 
-Orchestrator: option 9 → Data consumption → Metadata search.
+
+Orchestrator: option 8 → Data consumption → Metadata search,
+or via Streamlit dashboard.
 
 Run directly:
     python data_consumption/tasks/search_metadata.py
@@ -31,12 +33,12 @@ try:
 except ImportError:
     pass
 
-# ── Constants ──────────────────────────────────────────────────────────────
+# ── Constants
 
 TOP_K = 5
 
 
-# ── Result display ───────────────────────────────────────────────────────
+# ── Result display — Milvus text-embedding similarity hits
 
 
 def _format_result(rank: int, hit: dict) -> None:
@@ -96,7 +98,7 @@ def display_results(results: list[dict], query: str) -> None:
     print(f"{'═' * width}\n")
 
 
-# ── Search ───────────────────────────────────────────────────────────────
+# ── Search — embed query via all-MiniLM-L6-v2 and query Milvus ANN index
 
 
 def search_metadata(query: str, top_k: int = TOP_K) -> list[dict]:
@@ -112,7 +114,7 @@ def search_metadata(query: str, top_k: int = TOP_K) -> list[dict]:
     return results
 
 
-# ── Interactive CLI ──────────────────────────────────────────────────────
+# ── Interactive CLI — natural-language question → embed → search → display loop
 
 
 def run_interactive(*, from_orchestrator: bool = False) -> None:
@@ -128,7 +130,7 @@ def run_interactive(*, from_orchestrator: bool = False) -> None:
     print()
     print("  Requirements:")
     print("    - Milvus running  (docker compose up -d milvus)")
-    print("    - Text embeddings ingested  (orchestrate → [10])")
+    print("    - Text embeddings ingested  (orchestrate → [6])")
     print()
     print("  Example queries:")
     print("    - what frequency do rain sounds have?")

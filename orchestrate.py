@@ -10,10 +10,10 @@ Interactive CLI that lets you choose which flow to run:
   4. Cold path: ESC-50     (batch ESC-50 ingestion)
   5. Trusted zone       → trusted_zone/trusted_zone_processing.py
   6. Exploitation zone  → exploitation_zone/exploitation_zone_processing.py
-  7. Sync Delta Lake    → shared/sync_delta.py (all zones)
-  8. SonarQube analysis (code quality scan + results)
-  9. Data consumption   (KPI queries + Streamlit dashboard)
- 11. Data governance    (quality checks + lineage tracking)
+                          (includes Milvus embedding generation)
+  7. SonarQube analysis (code quality scan + results)
+  8. Data consumption   (KPI queries + Streamlit dashboard)
+  9. Data governance    (quality + lineage + security + catalog)
 
 While a flow is running, live CPU / RAM / disk metrics are displayed
 every 2 seconds so you can monitor resource usage in real time.
@@ -87,22 +87,6 @@ FLOWS = {
                 PROJECT_ROOT,
                 "exploitation_zone",
                 "exploitation_zone_processing.py",
-            ),
-        ],
-    },
-    "7": {
-        "name": "Sync all zones → Delta Lake",
-        "scripts": [
-            os.path.join(PROJECT_ROOT, "shared", "sync_delta.py"),
-        ],
-    },
-    "10": {
-        "name": "Milvus embeddings (audio + text)",
-        "scripts": [
-            os.path.join(
-                PROJECT_ROOT,
-                "exploitation_zone",
-                "milvus_embeddings.py",
             ),
         ],
     },
@@ -562,6 +546,10 @@ DATA_SECURITY_SCRIPT = os.path.join(
     PROJECT_ROOT, "governance", "data_security.py"
 )
 
+DATA_CATALOG_SCRIPT = os.path.join(
+    PROJECT_ROOT, "governance", "data_catalog.py"
+)
+
 GOVERNANCE_TASKS = {
     "1": {
         "name": "Data quality checks (Great Expectations)",
@@ -576,6 +564,11 @@ GOVERNANCE_TASKS = {
     "3": {
         "name": "Data security (MinIO bucket policies)",
         "script": DATA_SECURITY_SCRIPT,
+        "callable": "run_interactive",
+    },
+    "4": {
+        "name": "Data catalog (DCAT data products)",
+        "script": DATA_CATALOG_SCRIPT,
         "callable": "run_interactive",
     },
 }
@@ -596,7 +589,7 @@ def run_governance_menu():
     while True:
         print_governance_banner()
         try:
-            choice = input("  Select task [1-3, b]: ").strip().lower()
+            choice = input("  Select task [1-4, b]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("\n  Back to main menu.")
             break
@@ -643,10 +636,9 @@ def print_banner():
         flow = FLOWS[key]
         tag = " (parallel)" if flow.get("parallel") else ""
         print(f"   [{key}]  {flow['name']}{tag}")
-    print("   [8]  SonarQube code analysis")
-    print("   [9]  Data consumption tasks")
-    print("  [10]  Milvus embeddings (audio + text)")
-    print("  [11]  Data governance")
+    print("   [7]  SonarQube code analysis")
+    print("   [8]  Data consumption tasks")
+    print("   [9]  Data governance")
     print()
     print("   [q]  Quit")
     print()
@@ -730,7 +722,7 @@ def main():
     while True:
         print_banner()
         try:
-            choice = input("  Select flow [1-11, q]: ").strip().lower()
+            choice = input("  Select flow [1-9, q]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("\n  Bye!")
             break
@@ -738,13 +730,13 @@ def main():
         if choice == "q":
             print("  Bye!")
             break
-        if choice == "8":
+        if choice == "7":
             run_sonarqube()
             continue
-        if choice == "9":
+        if choice == "8":
             run_data_consumption_menu()
             continue
-        if choice == "11":
+        if choice == "9":
             run_governance_menu()
             continue
         if choice not in FLOWS:
