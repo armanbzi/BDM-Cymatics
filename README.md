@@ -1,6 +1,274 @@
 # Cymatics — Sound-Driven Pattern Generation & Analysis Pipeline
 
-Big Data Management project that transforms audio files into visual cymatics patterns, extracts acoustic features, generates audio / text / image embeddings, and organizes all artifacts into a structured, queryable data lakehouse with governance, role-based access and a Streamlit consumption dashboard.
+Big Data Management project that transforms audio files into visual **cymatics** patterns (the geometric standing-wave figures that sound produces on a vibrating membrane), extracts acoustic features, generates audio / text / image embeddings, and organizes all artifacts into a structured, queryable data lakehouse with governance, role-based access and a Streamlit consumption dashboard.
+
+> **Full technical report:** [`docs/BDM_Final.pdf`](docs/BDM_Final.pdf) — the P2 (Final) deliverable for the *Big Data Management* course, Master's in Data Science, Universitat Politècnica de Catalunya (UPC). This README expands on that report and mirrors its figures. Where the report and code differ in wording, the code and this README are authoritative for running the system.
+
+**Business domain:** *Sound Analysis & Cymatics* — make audio observations and their visual cymatics representations **searchable, classifiable and analyzable**.
+
+## Table of Contents
+
+**Concepts (from the report)**
+
+1. [Overview](#overview)
+2. [Problem and Goals](#problem-and-goals)
+3. [Datasets and Sources](#datasets-and-sources)
+4. [Architecture and Technology Stack](#architecture-and-technology-stack)
+5. [Data Pipeline and Zones](#data-pipeline-and-zones)
+6. [Data Model and Data Products](#data-model-and-data-products)
+7. [Data Consumption: KPIs and Analytics](#data-consumption-kpis-and-analytics)
+8. [Results and Findings](#results-and-findings)
+9. [Data Governance](#data-governance)
+10. [Design Decisions and Challenges](#design-decisions-and-challenges)
+11. [Conclusions and Future Work](#conclusions-and-future-work)
+
+**Getting started (how to run)**
+
+12. [Prerequisites](#prerequisites)
+13. [Quick Start](#quick-start)
+14. [Environment Variables](#environment-variables)
+15. [Embeddings and Milvus Collections](#embeddings-and-milvus-collections)
+16. [Trained Classifier Heads](#trained-classifier-heads)
+17. [SonarQube (Code Quality)](#sonarqube-code-quality)
+18. [Repository Layout](#repository-layout)
+19. [MinIO Bucket Layout](#minio-bucket-layout)
+20. [Authors](#authors)
+
+---
+
+## Overview
+
+Cymatics is an end-to-end big-data pipeline that turns raw sound into an analyzable, multi-modal dataset. Every audio observation is ingested through one of four paths, cleaned and rendered into a cymatics **image** and **video** with quality metrics, enriched with spectral and timbral **features**, and embedded into three modality-specific **vector** spaces. The curated data is then served through pre-defined KPIs, similarity/pattern search, semantic metadata search and two trained classifiers, all behind a unified Streamlit dashboard and governed by data-quality, security, lineage and catalog mechanisms.
+
+The system follows the **object-storage-centric** architecture (Option 1 in the project statement) and partially incorporates the **vector-database** approach (Option 2) for the exploitation zone. MinIO is the central object store; Apache Spark performs distributed batch processing; Delta Lake is the analytical storage format for structured metadata at every stage; Milvus stores embeddings for approximate-nearest-neighbour (ANN) search; Kafka transports the hot-path event stream; and Airflow plus a custom Python orchestrator drive scheduled and manual runs. The project is fully self-contained and reproducible from a clean clone — every service except the host-side Python orchestrator runs inside Docker.
+
+## Problem and Goals
+
+Sound is rich and high-dimensional, but its *visual* structure (cymatics) and its *acoustic* structure are rarely captured, curated and made queryable together. The goal of this project is to build a reproducible big-data platform that:
+
+- **Ingests** environmental/musical sounds from batch datasets, live microphone capture and a streaming path.
+- **Curates** them through a landing → trusted → exploitation zone lakehouse, keeping raw assets and typed tabular metadata side by side.
+- **Enriches** each recording with cymatics renderings, spectral/timbral features and multi-modal embeddings.
+- **Serves** the curated data for analytics (KPIs), similarity/pattern search, semantic search and supervised classification.
+- **Governs** the whole platform with data-quality checkpoints, role-based access control, cross-zone lineage and a machine-readable catalog.
+
+## Datasets and Sources
+
+Observations enter the **landing zone** through four ingestion paths, recorded in a controlled `source` vocabulary (`warm-path`, `hot-path`, `cold-Freesound`, `cold-ESC-50`):
+
+| Path | Source | Description |
+|---|---|---|
+| **Warm path** | Microphone | Record a 5-second clip, preview the cymatics pattern, approve/reject, then store the audio. |
+| **Hot path** | Microphone → Kafka | A producer streams live cymatics previews and uploads a clip every 5 s; a parallel consumer archives the Kafka events into the landing zone. |
+| **Cold path — Freesound** | [Freesound](https://freesound.org) REST API | Batch ingestion of labelled environmental sounds (requires `FREESOUND_API_KEY`); supports incremental ingestion via a checkpoint. |
+| **Cold path — ESC-50** | [ESC-50](https://github.com/karolpiczak/ESC-50) dataset | Batch ingestion of the 50-class environmental-sound benchmark (auto-downloaded if missing). |
+
+Unstructured assets (WAV audio, and the later PNG/MP4 renders) are stored in MinIO under deterministic paths keyed by **peak frequency** and **UUID**, which groups related observations for downstream visual and acoustic analysis. PANNs CNN14 (used later for audio embeddings) is pretrained on **AudioSet**, which aligns well with the kinds of sounds ingested here (animals, water, fire, etc.).
+
+## Architecture and Technology Stack
+
+![Architecture of the Cymatics pipeline](docs/figures/architecture.png)
+
+*Architecture of the Cymatics pipeline: ingestion paths (cold/warm/hot) feed the Landing → Trusted → Exploitation zones on MinIO + Delta Lake, with Spark batches between zones, Milvus embeddings in the exploitation zone, Airflow/Docker orchestration, SonarQube code quality, and a Streamlit consumption layer.*
+
+Each zone has its own MinIO bucket holding both **unstructured assets** and a **tabular metadata table** materialised as CSV, Parquet and a Delta Lake table. Embeddings — inherently high-dimensional and frequently queried by ANN — live in a dedicated Milvus instance backed by its **own** MinIO (`milvus-minio`), keeping them isolated from curated data. Code quality is tracked by SonarQube, wired into the orchestrator so a single command produces a fresh report for the `bdm-cymatics` project.
+
+| Layer | Structured storage | Vector storage | Processing |
+|---|---|---|---|
+| **Landing** | CSV / Parquet / Delta | — | Python, Kafka |
+| **Trusted** | CSV / Parquet / Delta | — | Spark, Python |
+| **Exploitation** | CSV / Parquet / Delta | Milvus (3 collections) | Spark, Python, PyTorch |
+| **Consumption** | KPIs / dashboard | Milvus ANN search | Pandas, Streamlit, PyTorch |
+
+**Technology roles:** MinIO (S3-compatible object store per zone) · Apache Spark (distributed batch cleaning + spectral features) · Delta Lake (typed analytical tables) · Milvus + Attu (vector DB + admin UI) · Kafka + Kafka UI (hot-path event stream) · Apache Airflow (scheduled DAGs) · custom Python `orchestrate.py` (manual runs + live CPU/RAM monitor) · Streamlit (unified consumption + governance dashboard) · SonarQube (code quality) · PostgreSQL (Airflow & SonarQube metadata). See the [containerised services table](#quick-start) for endpoints.
+
+## Data Pipeline and Zones
+
+### Landing Zone
+
+Raw observations land untouched, one metadata row per UUID plus the original WAV. Cold-path rows carry API/dataset metadata; hot-path rows also carry the Kafka streaming-event payload (timestamps, device identifiers), which is archived here and flattened later. Metadata is written as CSV, Parquet and a Delta table; Freesound ingestion keeps a checkpoint file for incremental pulls.
+
+### Trusted Zone
+
+The trusted zone transforms raw observations into clean, schema-aligned records using only **information-preserving, reversible** transformations (task-specific assumptions are deferred to later zones). It runs in **two stages**:
+
+1. **Spark batch** (`trusted-spark-batch` container) — reads the landing CSV through the S3A connector, **deduplicates on the UUID primary key** against existing trusted metadata, enforces the trusted schema, merges the Kafka event metadata for hot-path rows, and writes the pending UUIDs to a workset on MinIO.
+2. **Per-row Python stage** — for each pending UUID, downloads the audio, invokes the cymatics rendering engine (`shared/cymatics_engine.py`) to produce a **2048×2048 PNG** and an **MP4**, computes two cymatics quality metrics — `symmetry_score` and `pattern_stability_score` (both in `[0, 1]`) — and appends the new records to CSV, Parquet and Delta.
+
+Assets are stored under `audio/`, `images/`, `videos/` grouped by peak frequency and UUID; metadata lives under `metadata/`. The Delta table uses a **typed schema** (`shared/sync_delta.py`) — floats for scores/durations, ints for byte sizes, strings for IDs/paths — added specifically to overcome the all-strings default of reading from CSV. Generating the cymatics assets once here avoids regenerating identical artifacts downstream.
+
+### Exploitation Zone
+
+The exploitation zone curates trusted data into a **single wide, pre-joined table** (every trusted attribute joined with the features derived here), removing the need for joins at consumption time and reducing query complexity and latency. The pipeline chains six steps:
+
+1. **Spark batch** (`spark_exploitation_zone.py`) extracts **eight global spectral descriptors**.
+2. **Python per-row features**: MFCC coefficients (13-dim timbral fingerprint) and the harmonic-energy ratio (tonal vs. inharmonic) — computed in Python because they involve per-frame state unsuited to Spark.
+3. Append new rows to CSV and Parquet.
+4. Sync Parquet → Delta with the typed per-zone schema.
+5. Build/update the **three Milvus collections** (idempotent upsert keyed on UUID).
+6. Train and persist the **classifier heads** for the audio and cymatics modalities.
+
+| Spark spectral descriptor | Brief overview |
+|---|---|
+| `spectral_centroid_hz` | "Centre of mass" of the spectrum; higher = brighter sound. |
+| `spectral_bandwidth_hz` | Spread of the spectrum around the centroid. |
+| `spectral_rolloff_hz` | Frequency below which the bulk of the signal sits. |
+| `spectral_flatness` | ~1 = noise-like content, ~0 = tonal content. |
+| `signal_energy` | Sum of squared samples; coarse loudness/length proxy. |
+| `spectral_entropy` | High = complex/noise-like, low = simple/tonal. |
+| `zero_crossing_rate` | Average sign changes per second. |
+| `loudness` | Energy in decibels (dBFS). |
+
+The three Milvus collections share an HNSW index with cosine similarity (`M=16`, `efConstruction=256`); see [Embeddings and Milvus Collections](#embeddings-and-milvus-collections) for models and dimensions.
+
+### Consumption
+
+The consumption layer reads the exploitation-zone Delta table through **analyst-only** (read-only) S3 credentials and queries the three Milvus collections through their ANN interface. See [Data Consumption](#data-consumption-kpis-and-analytics).
+
+## Data Model and Data Products
+
+The exploitation zone materialises **five data products** so the governance layer can attach policies, owners and quality checks at the granularity of a single product:
+
+| Data product | Type | Storage | Owner | Primary consumer(s) |
+|---|---|---|---|---|
+| `sound_observations_delta` | structured | Delta Lake on MinIO | `pipeline_admin` | KPI discovery, Streamlit, lineage |
+| `sound_audio_embeddings` | vector (2048-d, PANNs CNN14) | Milvus (HNSW/COSINE) | `data_scientist` | audio classification + similarity search |
+| `sound_text_embeddings` | vector (384-d, all-MiniLM-L6-v2) | Milvus (HNSW/COSINE) | `data_scientist` | metadata semantic search (RAG-ready) |
+| `sound_cymatics_embeddings` | vector (512-d, CLIP ViT-B/32) | Milvus (HNSW/COSINE) | `data_scientist` | cymatics pattern search + head training |
+| `classifier_models` | model registry | MinIO object store | `data_scientist` | audio & cymatics classification |
+
+The analytical center of the domain is the `sound_observations_delta` product — a single denormalised observation row per UUID. Its data-product canvas (domain, sources, transformation steps, storage, data contract, consumers and ubiquitous language) is shown below:
+
+![Data-product canvas for sound_observations_delta](docs/figures/data_product_canvas.png)
+
+*Data-product canvas for `sound_observations_delta`: batch (PySpark + Python) transformation steps, MinIO/Delta storage, a typed data contract refreshed every 15 days, and downstream analytics/ML consumers.*
+
+**`sound_observations_delta` schema:**
+
+| Column | Type | Group |
+|---|---|---|
+| `uuid` | string | Identifier (primary key) |
+| `category` | string | Supervised label used by KPIs and classifier heads |
+| `peak_frequency_hz` | float64 | Trusted-zone peak-frequency statistic |
+| `peak_time_s` | float64 | Trusted-zone peak-frequency statistic |
+| `peak_amplitude` | float64 | Trusted-zone peak-frequency statistic |
+| `peak_rms` | float64 | Trusted-zone peak-frequency statistic |
+| `all_peak_frequencies_hz` | string | List of harmonics, kept as text |
+| `symmetry_score` | float64 | Cymatics quality score in `[0, 1]` |
+| `pattern_stability_score` | float64 | Cymatics quality score in `[0, 1]` |
+| `spectral_centroid_hz` | float64 | Spark spectral feature |
+| `spectral_bandwidth_hz` | float64 | Spark spectral feature |
+| `spectral_rolloff_hz` | float64 | Spark spectral feature |
+| `spectral_flatness` | float64 | Spark spectral feature |
+| `signal_energy` | float64 | Spark spectral feature |
+| `spectral_entropy` | float64 | Spark spectral feature |
+| `zero_crossing_rate` | float64 | Spark spectral feature |
+| `loudness` | float64 | Spark spectral feature |
+| `MFCCs` | string | JSON-encoded 13-dim vector (Python feature) |
+| `harmonic_energy_ratio` | float64 | Python feature |
+| `audio_path` | string | Trusted-zone WAV location |
+| `image_path` | string | Trusted-zone PNG location |
+| `video_path` | string | Trusted-zone MP4 location |
+
+**Data contracts (per product):** the structured product guarantees a typed, fixed schema refreshed every 15 days with Great-Expectations quality checks (non-null UUID, no duplicates, scores in `[0, 1]`, valid asset paths). Each vector product guarantees L2-normalised, non-zero vectors of the exact declared dimensionality, idempotent upsert keyed on UUID, and HNSW/cosine indexing; the text product additionally bounds descriptions to ≤ 4096 characters. The `classifier_models` product guarantees a non-empty class list, a complete metrics report and a `model_version`.
+
+## Data Consumption: KPIs and Analytics
+
+Four downstream tasks are exposed both as CLI flows (orchestrator option 8) and as tabs in the unified Streamlit dashboard (`data_consumption/data_consumption_all.py`), on top of the same Python functions.
+
+![BDM Cymatics — Data Consumption Dashboard](docs/figures/streamlit_dashboard.png)
+
+*The Streamlit data-consumption dashboard (KPI view), reading the exploitation-zone Delta table with analyst read-only credentials.*
+
+**KPI discovery** — seven predefined queries over the exploitation-zone Delta table, each returned as a Pandas frame rendered as a chart and offered as a CSV download:
+
+| ID | Query | Brief overview |
+|---|---|---|
+| KPI 1 | Top categories by frequency share | Categories ranked by how dominant their most-repeated peak frequency is within the class. |
+| KPI 2 | Best cymatics candidates | Top recordings ranked by a combined cymatics quality score. |
+| KPI 3 | Top categories per frequency band | Within each low / mid / high frequency band. |
+| KPI 4 | Spectrally similar categories | Pairs of categories with the closest mean peak frequencies. |
+| KPI 5 | Processing time per ingestion source | Average trusted-zone processing duration grouped by ingestion path. |
+| KPI 6 | Spectral complexity per category | Categories ranked by mean spectral entropy (high = noise-like, low = tonal). |
+| KPI 7 | Brightest vs. darkest categories | Categories with the highest and lowest mean spectral centroid. |
+
+**Audio similarity search** — record 5 s from the microphone, compute the 2048-d PANNs CNN14 embedding, feed it to the trained audio head for a prediction, and run an ANN search against `sound_audio_embeddings` to return the top-*k* acoustically similar recordings as supporting evidence. Falls back gracefully to pure ANN search when no trained model is available.
+
+**Cymatics pattern search** — three modes in the CLIP ViT-B/32 space: **upload an image**, **record audio** (renders a cymatics image, then embeds it), or **type a natural-language description** (text-to-image). Image/audio modes feed the 512-d embedding to the trained cymatics head (predicted category + confidence) plus an ANN search over stored image embeddings; the text mode is retrieval-only.
+
+**Metadata semantic search** — each observation is summarized as a short natural-language description, embedded with all-MiniLM-L6-v2 and stored in Milvus; a user query is embedded with the same model and matched by cosine similarity. This lightweight retrieval layer is RAG-ready.
+
+## Results and Findings
+
+The exploitation pipeline closes with a lightweight supervised step (`classifier_training.py`): a logistic-regression head fitted on top of the **frozen** PANNs and CLIP embeddings to predict each observation's `category`. Training uses an **80/20** train/test split with **5-fold** stratified cross-validation and `class_weight="balanced"` to handle Freesound class imbalance, and runs only when at least two categories have ≥ 3 samples. Only the audio and cymatics modalities are trained (text is excluded because its description embeds the category). The reported evaluation trains a small batch (**~400 records**; 406 observations in the demo dataset) and compares the trained head against two kNN retrieval baselines (k=1, k=5) on a held-out test split.
+
+![Base versus trained: accuracy and macro-F1 on the held-out test split](docs/figures/classifier_base_vs_trained.png)
+
+*Base vs. trained — accuracy and macro-F1 on the held-out test split, for audio (left) and cymatics (right).*
+
+- **Audio (PANNs CNN14, 2048-d):** all three methods perform similarly — kNN k=1 **0.76** acc / **0.71** macro-F1, kNN k=5 **0.71** / **0.73**, trained head **0.74** / **0.67** — showing the frozen PANNs embeddings already separate the acoustic classes effectively.
+- **Cymatics (CLIP ViT-B/32, 512-d):** performance stays near chance for every method — kNN k=1 **0.20** / **0.18**, kNN k=5 **0.12** / **0.06**, trained head **0.23** / **0.16** — suggesting CLIP does not capture cymatics patterns well and that larger training data or encoder fine-tuning would be required.
+
+![Per-class precision, recall and F1 on the held-out test split](docs/figures/per_class_metrics.png)
+
+*Per-class precision, recall and F1 on the held-out test split — audio (top) is consistently strong across most classes; cymatics (bottom) is weak on many classes.*
+
+The audio model is consistently strong across most classes, with variation only in underrepresented categories that have few test samples. The cymatics model performs poorly on many classes, reinforcing that a larger training set or a more specialized approach is needed.
+
+## Data Governance
+
+The exploitation zone is governed at the **data-product** level (see [Data Model and Data Products](#data-model-and-data-products)). Four governance mechanisms ship with the project; each runs via the orchestrator (option 9) and via the Streamlit dashboard.
+
+- **Data quality — Great Expectations** (`governance/data_quality.py`) — three checkpoints aligned with the zone boundaries:
+  - **Landing → Trusted:** `uuid` non-null and unique; `peak_frequency_hz` strictly positive; `source` in the allowed vocabulary (`warm-path`, `hot-path`, `cold-Freesound`, `cold-ESC-50`); the WAV exists in MinIO with a valid RIFF/WAVE header and non-zero size.
+  - **Trusted → Exploitation:** all trusted attributes present, asset paths valid, each cymatics image a readable 2048×2048 PNG and each video a non-empty MP4.
+  - **Milvus:** vectors have the declared dimensionality, are L2-normalised and not all-zero.
+- **Data security — MinIO IAM** (`governance/data_security.py`) — four roles with a bucket-level access matrix, applied with `mc admin` inside the MinIO container (the Python SDK only supports bucket-level policies, not user management). Pipeline scripts authenticate as `pipeline_admin`; the dashboard and consumption tasks use read-only `analyst` credentials, enforced at the application level to prevent accidental writes. The audit report is stored in the `governance-zone` bucket.
+
+  | Role | Landing | Trusted | Exploitation | Governance |
+  |---|---|---|---|---|
+  | `pipeline_admin` | RW | RW | RW | RW |
+  | `data_engineer` | RW | RW | R | R |
+  | `data_scientist` | — | R | RW | R |
+  | `analyst` | R | R | R | R |
+
+- **Lineage tracking** (`governance/lineage_tracker.py`) — a UUID-indexed table tracing every observation across the three zones and three Milvus collections: which zones contain it, which assets were generated (WAV / PNG / MP4 / audio / text / cymatics embeddings), processing timestamps and a completeness flag. It is recomputed from existing metadata (no extra storage; full scans get expensive as the dataset grows). Example chain for one `sea_waves` recording ingested via ESC-50, at 100% completeness:
+
+  ```
+  Stages:  landing -> trusted -> exploitation   [####################] 100%
+    -> Ingested via ESC-50 -> landing-zone audio
+    -> Spark QA (dedup, schema) -> trusted-zone (image + video + peak detection, v2.0.0)
+    -> Spark spectral features + Python MFCCs -> exploitation-zone (v1.0.0)
+    -> PANNs CNN14      -> audio embedding    (2048-dim)
+    -> all-MiniLM-L6-v2 -> text embedding     (384-dim)
+    -> CLIP ViT-B/32    -> cymatics embedding  (512-dim)
+  ```
+
+- **Data catalog — DCAT** (`governance/data_catalog.py`) — registers the five data products in a machine-readable catalog kept as an object in the governance bucket (consistent with the object-storage-centric design), rather than deploying a heavyweight server such as Apache Atlas (no native connectors for MinIO/Delta/Milvus). It emits a readable JSON registry and a **DCAT** (W3C Data Catalog Vocabulary) JSON-LD document where each product is a `dcat:Dataset`, and displays each product's live health.
+
+## Design Decisions and Challenges
+
+- **Object-storage-centric + partial vector DB.** Option 1 (MinIO across zones) is combined with Option 2 (Milvus for the exploitation zone) so high-dimensional embeddings get purpose-built ANN indexing without giving up the simple object-store lakehouse for everything else.
+- **Pre-joined wide exploitation table.** A single denormalised table removes consumption-time joins, lowering query complexity and latency — a good fit for the single-observation-per-UUID scope.
+- **Tabular over semi-structured for Kafka events.** Hot-path events are archived in the landing zone, then flattened and merged into the tabular trusted schema; since the Kafka message schema is small and stable (timestamps, device IDs), a separate semi-structured store was unnecessary.
+- **Typed Delta schema.** A per-zone typed cast (`shared/sync_delta.py`) was introduced specifically to overcome the all-strings default produced when reading from CSV.
+- **Isolated Milvus storage.** Milvus runs against its own `milvus-minio`, which simplifies governance/access control and lets the vector stack be reset or maintained without touching curated data.
+- **`mc admin` for IAM.** User/role management is done through the MinIO admin CLI because the Python SDK only supports bucket-level policies; the trade-off is maintaining two credential pairs (`pipeline_admin` RW, `analyst` RO) in the environment.
+- **Thin linear classifier head.** A `StandardScaler → LogisticRegression` head on frozen embeddings was chosen over a deeper from-scratch model because, at the current data scale, a non-linear head would overfit.
+- **Catalog as an object, not Apache Atlas.** Keeping a DCAT JSON-LD catalog in the governance bucket avoids adding heavy backing services with no native MinIO/Delta/Milvus connectors; the trade-off is that the static registry must be updated when a new product is added.
+- **Cymatics assets generated once.** Rendering the 2048×2048 PNG and MP4 in the trusted zone avoids regenerating identical assets for every downstream task.
+
+## Conclusions and Future Work
+
+The platform demonstrates a reproducible, governed, multi-modal sound-and-cymatics lakehouse: ingestion (cold/warm/hot) → trusted cleaning + cymatics rendering → exploitation features + embeddings + classifiers → consumption (KPIs, search, classification) → governance (quality, security, lineage, catalog), automated through Airflow and a Python orchestrator.
+
+Key takeaways and directions:
+
+- **Audio** classification and similarity search already work well off frozen PANNs CNN14 embeddings.
+- **Cymatics** visual classification remains near chance with off-the-shelf CLIP; a larger training set and/or encoder fine-tuning (or a more specialized visual model) is the main avenue for improvement.
+- The **text** embeddings provide a lightweight retrieval layer that can back a **RAG-style chatbot** over the metadata in future work.
+
+---
 
 ## Prerequisites
 
@@ -186,7 +454,7 @@ See `env.example` for all options:
 | `SONAR_USERNAME` / `SONAR_PASSWORD` | `admin` / `admin` | Fallback scanner login |
 | `SONAR_JDBC_USERNAME` / `SONAR_JDBC_PASSWORD` | `sonar` / `sonar` | PostgreSQL credentials for the SonarQube container |
 
-## Embeddings & Milvus Collections
+## Embeddings and Milvus Collections
 
 The exploitation pipeline materialises three Milvus collections (HNSW / COSINE, `M=16`, `efConstruction=256`), all keyed on UUID with idempotent upsert:
 
@@ -210,26 +478,9 @@ exploitation-zone/models/
 └── cymatics_classifier.metrics.json
 ```
 
-Training is gated on having at least 2 categories with ≥3 samples each, so it skips cleanly on tiny datasets. The validation notebook (`exploitation_zone/notebooks/classifier_validation.ipynb`) renders generalisation plots (base-vs-trained comparison, per-class metrics, learning curves, confusion matrices) and saves the headline figures to `docs/`.
+Training is gated on having at least 2 categories with ≥3 samples each, so it skips cleanly on tiny datasets. The validation notebook (`exploitation_zone/notebooks/classifier_validation.ipynb`) renders generalisation plots (base-vs-trained comparison, per-class metrics, learning curves, confusion matrices) and saves the headline figures to `docs/`. See [Results and Findings](#results-and-findings) for the measured accuracy/F1 and the base-vs-trained comparison.
 
-## Data Governance
-
-Four governance mechanisms ship with the project; each runs via the orchestrator (option 9) and via the Streamlit dashboard.
-
-- **Data quality** (`governance/data_quality.py`) — Great Expectations checkpoints at the three zone boundaries (Landing → Trusted, Trusted → Exploitation, and Milvus collections).
-- **Data security** (`governance/data_security.py`) — MinIO IAM with four roles enforced through `mc admin`:
-
-  | Role | Landing | Trusted | Exploitation | Governance |
-  |---|---|---|---|---|
-  | `pipeline_admin` | RW | RW | RW | RW |
-  | `data_engineer` | RW | RW | R | R |
-  | `data_scientist` | — | R | RW | R |
-  | `analyst` | R | R | R | R |
-
-- **Lineage tracking** (`governance/lineage_tracker.py`) — UUID-indexed cross-zone table reporting which assets exist at each stage (WAV / PNG / MP4 / audio / text / cymatics embeddings) and pipeline completeness.
-- **Data catalog** (`governance/data_catalog.py`) — registers the five data products (owner, storage, schema, contract, consumers, lineage) and probes their live health, persisted as a DCAT JSON-LD catalog under `governance-zone/catalog/`.
-
-## SonarQube (code quality)
+## SonarQube (Code Quality)
 
 SonarQube tracks **bugs**, **vulnerabilities**, **code smells**, **duplication**, and **maintainability** so you can prioritize refactors and harden the Python pipelines over time. Configuration lives in `sonar-project.properties` (project key `bdm-cymatics`, Python sources and sensible exclusions for `data/`, `venv/`, etc.).
 
@@ -305,7 +556,7 @@ shared/
 docker/                              # Custom Dockerfiles (Airflow, Spark batches, Streamlit)
 kafka/                               # Kafka config
 minio/                               # MinIO config
-docs/                                # Project statement, P2 final report (LaTeX), diagrams
+docs/                                # Project statement, P2 final report (PDF + LaTeX), diagrams, figures/
 orchestrate.py                       # CLI orchestrator with resource monitor
 docker-compose.yml                   # Full stack
 ```
@@ -368,5 +619,3 @@ governance-zone/
 
 - Arman Bazarchi
 - Brisa Fernanda Cisneros Cervantes
-</content>
-</invoke>
